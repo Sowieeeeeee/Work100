@@ -1,0 +1,34 @@
+# ---- 本地运行产物（不入库）----
+data/state.db
+data/state.db-journal
+data/state.db-wal
+data/state.db-shm
+data/config.json
+data/secrets.json
+data/online_cache.json
+data/question_cache/
+logs/
+sessions/
+*.log
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- 大件与临时 ----
+*.zip
+*.MOV
+*.mov
+*.mp4
+*.wav
+.tooling/
+latency_runs/
