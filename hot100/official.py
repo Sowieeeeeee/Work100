@@ -14,17 +14,12 @@ import re
 from collections import deque
 from functools import lru_cache
 
-from . import acm_runtime
-from .config import DATA
-
-
-@lru_cache(maxsize=1)
-def _raw() -> dict:
-    return json.loads((DATA / "raw_questions.json").read_text(encoding="utf-8"))
+from . import acm_runtime, problem_source
 
 
 def raw_of(slug: str) -> dict:
-    return _raw()[slug]
+    """题源统一入口（P0）：先查 88 题原始数据，再查精选题池原始数据。"""
+    return problem_source.raw_lookup(slug)
 
 
 def meta_of(problem: dict) -> dict:
@@ -424,6 +419,8 @@ def canonical_return(problem: dict, obj, head=None):
 def oracle_expected(problem: dict, lc_args: list):
     from .bank import BANK
 
+    if problem["id"] not in BANK:
+        raise LookupError(f"题目 {problem['id']} 没有参考解，不能用 oracle 补期望输出")
     fn = BANK[problem["id"]]["fn"]
     # 原地修改类题目（旋转数组等）会改写入参，必须先 deepcopy，避免污染用例数据
     lc_args = copy.deepcopy(lc_args)
@@ -448,7 +445,7 @@ def _norm_args(values: list) -> str:
 
 
 @lru_cache(maxsize=256)
-def _cases_cached(pid: int, slug: str, io_key: str) -> tuple:
+def _cases_cached(pid: int, slug: str, io_key: str, allow_oracle: bool = True) -> tuple:
     problem = {"id": pid, "slug": slug, "io": json.loads(io_key)}
     pages = html_examples(problem)
     page_parsed = []
@@ -471,6 +468,9 @@ def _cases_cached(pid: int, slug: str, io_key: str) -> tuple:
         match = next((p for p in page_parsed if _norm_args(p["args"]) == key), None)
         if match:
             expected, source = match["expected"], "page"
+        elif not allow_oracle:
+            # 没有题面期望、又不允许用参考解补：宁可丢用例，也不造期望（DESIGN_v3 §3.1）。
+            continue
         else:
             expected, source = oracle_expected(problem, args), "judge"
         seen.add(key)
@@ -506,7 +506,12 @@ def _make_case(problem: dict, index: int, args: list, expected, source: str) -> 
     }
 
 
-def official_cases(problem: dict) -> list[dict]:
+def official_cases(problem: dict, allow_oracle: bool = True) -> list[dict]:
+    """题目全部官方用例。
+
+    allow_oracle=False 用于精选题池：池题没有参考解，任何「题面解析不出期望」的
+    用例都会被丢弃（调用方须据此把整题淘汰，见 tools/build_exam_pool.py）。
+    """
     io = problem["io"]
     io_key = json.dumps({"params": io["params"], "ret": io["ret"], "mode": io["mode"]}, sort_keys=True)
-    return [dict(c) for c in _cases_cached(problem["id"], problem["slug"], io_key)]
+    return [dict(c) for c in _cases_cached(problem["id"], problem["slug"], io_key, allow_oracle)]

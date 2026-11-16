@@ -43,7 +43,7 @@ def code_fence(text: str) -> str:
     return "```text\n" + text.rstrip() + "\n```"
 
 
-def generate_statement(problem: dict, ref_name: str) -> str:
+def generate_statement(problem: dict, ref_name: str, with_reference: bool = True) -> str:
     io = problem["io"]
     lines = [
         f"# {problem['id']}. {problem['title']}",
@@ -86,9 +86,12 @@ def generate_statement(problem: dict, ref_name: str) -> str:
         "- 先独立想 15 分钟，再看提示；25 分钟内完成，30 分钟是硬上限。",
         "- 卡住时先看提示 1，再看提示 2；仍写不出再看参考题解。",
         "- 看过参考题解后，标记为“看题解后复现”，并闭卷重写一遍。",
-        "- 参考题解：[打开](../reference/" + ref_name + ")（完成或决定看答案后再打开）。",
-        "",
     ])
+    if with_reference:
+        lines.append("- 参考题解：[打开](../reference/" + ref_name + ")（完成或决定看答案后再打开）。")
+    else:
+        lines.append("- 本题来自精选题库，没有本地参考题解；先写完再看力扣原题讨论。")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -344,15 +347,19 @@ def generate_core(problem: dict) -> str:
     return header + body + official.snippet_of(problem)
 
 
-def ensure_problem(problem: dict, create_solution: bool = True) -> dict:
+def ensure_problem(problem: dict, create_solution: bool = True, with_reference: bool = True) -> dict:
     paths = problem_paths(problem["id"], problem["slug"])
     paths["statement"].parent.mkdir(parents=True, exist_ok=True)
     paths["solution"].parent.mkdir(parents=True, exist_ok=True)
     paths["core"].parent.mkdir(parents=True, exist_ok=True)
     paths["reference"].parent.mkdir(parents=True, exist_ok=True)
     ref_name = paths["reference"].name
-    paths["statement"].write_text(generate_statement(problem, ref_name), encoding="utf-8")
-    paths["reference"].write_text(generate_reference(problem), encoding="utf-8")
+    paths["statement"].write_text(
+        generate_statement(problem, ref_name, with_reference=with_reference), encoding="utf-8"
+    )
+    if with_reference:
+        # 池题没有 BANK 参考解，硬写会 KeyError（DESIGN_v3 §2.1）。
+        paths["reference"].write_text(generate_reference(problem), encoding="utf-8")
     if create_solution:
         if not paths["solution"].exists():
             paths["solution"].write_text(generate_practice(problem), encoding="utf-8")

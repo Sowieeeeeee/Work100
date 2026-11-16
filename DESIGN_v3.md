@@ -132,6 +132,8 @@ git status --short                  # solutions/ core/ reference/ problems/*.md 
 - `data/exam_pool.json`：`{built_at, source, total, problems:[...]}`，problem 结构与 `problems.json` 同构；
 - `data/pool_raw.json`：`{slug: {metaData, codeSnippets, translatedContent, exampleTestcases}}` —— 供 P0 的 `PoolSource.raw_of` 使用。
 
+**产能校准（P0 实测）**：`io_map` 白名单对 88 题的命中率是 **60/88 = 68%**（`python -m tools.verify_p0`）。按 top-100-liked ∪ top-interview-150 的 Medium/Hard 候选约 430–470 题估算，一次构建预期落在 **290–320**，达到 250–300 目标；若不足 250，按 §3.1 顺序追加 `top-interview-100`，仍在日志里打印淘汰原因分布（白名单外 / 期望解析失败 / 用例不足）。
+
 **id 规则（v2 此处自相矛盾，v3 定稿）**：池题 id **直接用力扣 `questionFrontendId`**；与 88 题重合（同 id）时**复用主题库条目**，`pool_progress` 只为非 88 题写行。id 空间因此天然唯一。
 
 ```sql
