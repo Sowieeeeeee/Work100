@@ -305,13 +305,25 @@ class Store:
 
     def delete_day_plan(self, day: str) -> None:
         with self.conn() as c:
-            done = c.execute(
-                "SELECT COUNT(*) AS n FROM plan_items WHERE day=? AND status IN ('done','doing')",
+            blocking = c.execute(
+                "SELECT COUNT(*) AS n FROM plan_items WHERE day=? AND kind IN ('new','review') "
+                "AND status IN ('done','doing')",
                 (day,),
             ).fetchone()["n"]
-            if done:
+            if blocking:
                 raise ValueError("今天已经有开始或完成的题目，不能重建计划")
-            c.execute("DELETE FROM plan_items WHERE day=?", (day,))
+            # 只删 new/review 的待办行；保留 extra（专题加练）与非 pending 行（DESIGN_v3 §5.5）。
+            c.execute(
+                "DELETE FROM plan_items WHERE day=? AND kind IN ('new','review') AND status='pending'",
+                (day,),
+            )
+
+    def has_plan_for(self, day: str, pid: int) -> bool:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT 1 FROM plan_items WHERE day=? AND problem_id=?", (day, pid)
+            ).fetchone()
+        return row is not None
 
     def next_slot_index(self, day: str) -> int:
         with self.conn() as c:
@@ -538,6 +550,31 @@ class Store:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
         ).fetchone()
         return row is not None
+
+    def activity_by_day(self) -> dict[str, dict]:
+        """周报口径：sessions ∪ exams ∪ interviews → {day: {done, minutes}}（DESIGN_v3 §5.4）。"""
+        out: dict[str, dict] = {}
+        with self.conn() as c:
+            for row in c.execute(
+                "SELECT day, COUNT(*) AS n, COALESCE(SUM(elapsed_sec),0) AS sec "
+                "FROM sessions WHERE ended_at IS NOT NULL GROUP BY day"
+            ):
+                out[row["day"]] = {"done": int(row["n"]), "minutes": round(int(row["sec"]) / 60)}
+            if self._has_table(c, "exams"):
+                for row in c.execute(
+                    "SELECT substr(created_at,1,10) AS day, COUNT(*) AS n "
+                    "FROM exams WHERE status != 'running' GROUP BY day"
+                ):
+                    d = out.setdefault(row["day"], {"done": 0, "minutes": 0})
+                    d["done"] += int(row["n"])
+            if self._has_table(c, "interviews"):
+                for row in c.execute(
+                    "SELECT substr(created_at,1,10) AS day, COUNT(*) AS n "
+                    "FROM interviews WHERE status != 'running' GROUP BY day"
+                ):
+                    d = out.setdefault(row["day"], {"done": 0, "minutes": 0})
+                    d["done"] += int(row["n"])
+        return out
 
     def unlocked_achievements(self) -> set[str]:
         with self.conn() as c:

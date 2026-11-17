@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 from . import dashboard, judge, materials, motivation, notify, official, planner
 from .bank import BANK
 from .config import ROOT, load_config, save_config
-from .store import RESULT_LABEL, Store
+from .store import COMPLETE, RESULT_LABEL, Store
 
 log = logging.getLogger("hot100")
 
@@ -388,6 +388,9 @@ class App:
         self.store.record_run(problem["id"], mode, result["metrics"])
         self.store.set_mode(problem["id"], mode)
         best = self.store.best_run(problem["id"], mode)
+        xp = {"xp_gained": 0, "new_badges": []}
+        if payload.get("context") == "free" and result["metrics"]["pass_rate"] >= 100:
+            xp = motivation.award(self.store, "topic_ac", problem["id"])
         return {
             "problem_id": problem["id"],
             "mode": mode,
@@ -399,6 +402,7 @@ class App:
                 "total": best["total"],
                 "runs": self.store.run_count(problem["id"], mode),
             } if best else None,
+            **xp,
         }
 
     def run_detached(self, problem: dict, mode: str, code: str) -> dict:
@@ -465,6 +469,51 @@ class App:
         day = payload.get("day") or date.today().isoformat()
         planner.rebuild_day(self.store, self.problems, self.cfg, day)
         return {"day": day}
+
+    def topics(self, tag: str) -> dict:
+        """专题视图：tag=group（studyplan 分组）| official（官方标签，多标签题重复出现）。"""
+        state = self.store.problems()
+
+        def brief(p: dict) -> dict:
+            row = state.get(p["id"])
+            return {
+                "id": p["id"], "title": p["title"], "difficulty": p["difficulty"],
+                "group": p["group"], "status": row["status"] if row else "todo",
+            }
+
+        if tag == "official":
+            buckets: dict[str, list[dict]] = {}
+            for p in self.problems:
+                for t in p.get("topics") or []:
+                    buckets.setdefault(t, []).append(brief(p))
+            view = "official"
+        else:
+            buckets = {}
+            for p in self.problems:
+                buckets.setdefault(p["group"], []).append(brief(p))
+            view = "group"
+        topics = [
+            {
+                "name": name, "count": len(ps),
+                "done": sum(1 for b in ps if b["status"] in COMPLETE),
+                "problems": ps,
+            }
+            for name, ps in sorted(
+                buckets.items(),
+                key=lambda kv: (-sum(1 for b in kv[1] if b["status"] in COMPLETE), kv[0]),
+            )
+        ]
+        return {"view": view, "topics": topics}
+
+    def plan_add(self, payload: dict) -> dict:
+        pid = int(payload.get("problem_id"))
+        day = payload.get("day") or date.today().isoformat()
+        planner.ensure_day(self.store, self.problems, self.cfg, day)
+        planner.add_extra_item(self.store, self.problems, self.cfg, day, pid)
+        return {"day": day}
+
+    def week(self) -> dict:
+        return {"days": self.store.activity_by_day()}
 
 
 def _validate_config(cfg: dict) -> None:
@@ -637,6 +686,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "state": self.app.state()})
             elif path == "/api/badges":
                 self._json({"ok": True, **self.app.badge_list()})
+            elif path == "/api/topics":
+                tag = (parse_qs(parsed.query).get("tag") or ["group"])[0]
+                self._json({"ok": True, **self.app.topics(tag)})
+            elif path == "/api/week":
+                self._json({"ok": True, **self.app.week()})
             elif path == "/api/statement":
                 query = parse_qs(parsed.query)
                 pid = int((query.get("id") or ["0"])[0])
@@ -699,6 +753,8 @@ class Handler(BaseHTTPRequestHandler):
                     data = self.app.update_config(payload)
                 elif path == "/api/replan":
                     data = self.app.replan(payload)
+                elif path == "/api/plan/add":
+                    data = self.app.plan_add(payload)
                 else:
                     self._error("未知路径", 404)
                     return

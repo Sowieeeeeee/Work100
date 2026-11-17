@@ -191,6 +191,20 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
 .badge span{display:block;color:var(--dim);font-size:11px;margin-top:3px;line-height:1.5}
 .badge.off{opacity:.38;filter:grayscale(.7)}
 .badge.on{border-color:rgba(45,212,191,.4);background:linear-gradient(180deg,rgba(45,212,191,.10),#0c1626)}
+.topicgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.topiccard{background:#0c1626;border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer}
+.topiccard:hover{border-color:#2d4a6b}
+.topiccard .thead{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.topiccard b{font-size:14px}
+.topicproblems{display:none;margin-top:10px;border-top:1px dashed #1b2a43;padding-top:8px}
+.topiccard.open .topicproblems{display:block}
+.tprobs{display:flex;flex-direction:column;gap:5px}
+.tprob{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;background:#0a1424;font-size:12.5px}
+.tprob .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tprob .tbtn{display:flex;gap:5px;flex:none}
+.tprob .mini{background:#16233a;border:1px solid var(--line);color:#c9d8ec;border-radius:6px;padding:3px 8px;font-size:11px}
+.tprob .mini:hover{border-color:#33506f}
+.tprob.done .tt{color:var(--dim);text-decoration:line-through}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(10px);
   background:#13223a;border:1px solid #2b4668;color:#e6f0ff;padding:10px 16px;border-radius:10px;
   font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:99;max-width:80vw}
@@ -340,9 +354,17 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
     <button class="iconbtn" id="btnBadges">🏅 徽章 <span id="heroBadgeCount">0</span></button>
   </div>
 
+  <div class="tabs" id="navTabs">
+    <button class="tab on" data-view="practice">练习计划</button>
+    <button class="tab" data-view="topic">专题练习</button>
+    <button class="tab" data-view="exam" data-locked="1">模拟考试</button>
+    <button class="tab" data-view="interview" data-locked="1">手撕面试</button>
+    <button class="tab" data-view="report" data-locked="1">复盘报告</button>
+  </div>
+
   <div class="warn hidden" id="warnBox"></div>
 
-  <div class="main">
+  <div class="main" id="viewPractice">
     <section class="left">
       <div class="statgrid">
         <div class="stat"><b id="statDone">0</b><span>已完成 / 总题数</span></div>
@@ -394,6 +416,19 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
       </div>
     </aside>
   </div>
+
+  <div class="panel pad hidden" id="viewTopic" style="margin-top:16px">
+    <div class="sect-head">
+      <h2>专题练习</h2>
+      <div class="tabs" style="margin:0">
+        <button class="tab on" id="topicGroupBtn">按分组</button>
+        <button class="tab" id="topicOfficialBtn">按标签</button>
+      </div>
+    </div>
+    <div class="tip" style="margin:8px 0 12px">挑一个专题集中练：可以「加练」进今天计划（25 分钟/题），也可以直接「写代码」自由练习（全过 +10 XP）。</div>
+    <div id="topicList"><div class="empty">正在加载专题…</div></div>
+  </div>
+
   <footer>本地运行 · 数据保存在 data/state.db · 关闭页面不会丢失进度</footer>
 </div>
 
@@ -556,6 +591,69 @@ async function openBadges(){
   }catch(e){ toast(e.message); }
 }
 $("#btnBadges").addEventListener("click", openBadges);
+
+/* ---------------- 导航与专题（P2） ---------------- */
+let activeView = "practice", topicTag = "group", topicData = null;
+function switchView(view){
+  const btn = document.querySelector('#navTabs [data-view="' + view + '"]');
+  if(btn && btn.dataset.locked){ toast("该功能将在后续阶段开放"); return; }
+  activeView = view;
+  document.querySelectorAll("#navTabs .tab").forEach(t => t.classList.toggle("on", t.dataset.view === view));
+  $("#viewPractice").classList.toggle("hidden", view !== "practice");
+  $("#viewTopic").classList.toggle("hidden", view !== "topic");
+  if(view === "topic") loadTopics();
+}
+document.querySelectorAll("#navTabs .tab").forEach(t =>
+  t.addEventListener("click", () => switchView(t.dataset.view)));
+$("#topicGroupBtn").addEventListener("click", () => { topicTag = "group"; loadTopics(); });
+$("#topicOfficialBtn").addEventListener("click", () => { topicTag = "official"; loadTopics(); });
+
+async function loadTopics(){
+  $("#topicList").innerHTML = '<div class="empty"><span class="spin"></span>正在加载专题…</div>';
+  try{
+    const d = await api("/api/topics?tag=" + topicTag);
+    topicData = d;
+    renderTopics();
+  }catch(e){ $("#topicList").innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>'; }
+}
+function renderTopics(){
+  const list = (topicData && topicData.topics) || [];
+  if(!list.length){ $("#topicList").innerHTML = '<div class="empty">没有专题。</div>'; return; }
+  $("#topicList").innerHTML = '<div class="topicgrid">' + list.map((t, idx) =>
+    '<div class="topiccard" data-i="' + idx + '">' +
+    '<div class="thead"><b>' + esc(t.name) + '</b>' +
+    '<span class="pill ' + (t.done === t.count ? 'ok' : 'muted') + '">' + t.done + '/' + t.count + '</span></div>' +
+    '<div class="topicproblems"><div class="tprobs">' + t.problems.map(p =>
+      '<div class="tprob' + (p.status === "done" ? ' done' : '') + '">' +
+      '<span class="tt">#' + p.id + ' ' + esc(p.title) + ' · ' + esc(p.difficulty) + '</span>' +
+      '<span class="tbtn">' +
+      '<button class="mini" data-add="' + p.id + '">加练</button>' +
+      '<button class="mini" data-code="' + p.id + '">写代码</button>' +
+      '</span></div>').join("") + '</div></div></div>').join("") + '</div>';
+  $("#topicList").querySelectorAll(".topiccard").forEach(card => {
+    card.addEventListener("click", (e) => {
+      if(e.target.dataset.add || e.target.dataset.code) return;
+      card.classList.toggle("open");
+    });
+  });
+  $("#topicList").querySelectorAll("[data-add]").forEach(b =>
+    b.addEventListener("click", () => addExtra(Number(b.dataset.add))));
+  $("#topicList").querySelectorAll("[data-code]").forEach(b =>
+    b.addEventListener("click", () => openTopicPractice(Number(b.dataset.code))));
+}
+async function addExtra(pid){
+  try{
+    await api("/api/plan/add", {problem_id: pid});
+    toast("已加入今天计划（25 分钟/题）");
+    await refresh(true);
+    switchView("practice");
+  }catch(e){ toast(e.message); }
+}
+function openTopicPractice(pid){
+  const p = (topicData.topics || []).flatMap(t => t.problems).find(x => x.id === pid);
+  if(!p){ toast("找不到题目"); return; }
+  openWorkspace({problem_id: p.id, title: p.title, difficulty: p.difficulty, free: true});
+}
 
 function renderItems(){
   const box = $("#items");
@@ -816,7 +914,7 @@ async function openReference(i){
 /* ---------------- 写代码工作台 ---------------- */
 const ws = {
   pid:null, item:null, mode:"acm", dirty:false, cases:[], results:{}, best:{},
-  file:"", errLine:0, pcTimer:null, saveTimer:null, pcSeq:0, running:false, resetArmed:false
+  file:"", errLine:0, pcTimer:null, saveTimer:null, pcSeq:0, running:false, resetArmed:false, free:false
 };
 const wsArea = $("#wsArea"), wsHl = $("#wsHl"), wsGutter = $("#wsGutter");
 
@@ -920,6 +1018,7 @@ function loadCode(d){
 async function openWorkspace(i, autorun){
   ws.item = i; ws.pid = i.problem_id;
   ws.results = {}; ws.best = {}; ws.errLine = 0; ws.running = false;
+  ws.free = !!i.free;
   $("#ws").classList.remove("hidden");
   document.body.style.overflow = "hidden";
   $("#wsTitle").textContent = "#" + i.problem_id + " " + i.title;
@@ -1054,7 +1153,8 @@ async function wsRunAll(){
   $("#wsCases").innerHTML = '<div class="empty"><span class="spin"></span>正在隔离子进程里运行 ' +
     ws.cases.length + ' 个官方用例，最长约 30 秒…</div>';
   try{
-    const d = await api("/api/run", {problem_id:ws.pid, mode:ws.mode, code:wsArea.value});
+    const d = await api("/api/run", {problem_id:ws.pid, mode:ws.mode, code:wsArea.value,
+      context: ws.free ? "free" : "plan"});
     ws.dirty = false;
     ws.results[ws.mode] = d;
     if(d.best) ws.best[ws.mode] = d.best;
@@ -1064,6 +1164,8 @@ async function wsRunAll(){
     toast(m.passed === m.total
       ? "全部通过 " + m.passed + "/" + m.total + " · 总耗时 " + m.total_ms + "ms"
       : "通过 " + m.passed + "/" + m.total + " · 通过率 " + m.pass_rate + "%");
+    if(d.xp_gained) toast("+" + d.xp_gained + " XP");
+    (d.new_badges || []).forEach(b => toast("解锁徽章：" + b.name));
   }catch(e){
     toast(e.message);
     renderResults();

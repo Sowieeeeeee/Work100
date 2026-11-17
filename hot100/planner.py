@@ -158,5 +158,39 @@ def item_times(item, cfg: dict) -> tuple[datetime, datetime]:
     return start, end
 
 
+def add_extra_item(store: Store, problems: list[dict], cfg: dict, day_str: str | None, problem_id: int) -> dict:
+    """专题加练：往今日计划追加一条 kind='extra'（DESIGN_v3 §5.5）。
+
+    - 同题当天已有任意 kind 的计划行 → 拒绝重复添加。
+    - 追加在最后一个槽位之后，25 分钟一档。
+    """
+    day = parse_day(day_str)
+    day_key = day.isoformat()
+    problem = next((p for p in problems if p["id"] == problem_id), None)
+    if problem is None:
+        raise ValueError(f"题目 {problem_id} 不在题库中")
+    if store.has_plan_for(day_key, problem_id):
+        raise ValueError("这题今天已经在计划里了")
+
+    rows = store.plan(day_key)
+    slot = store.next_slot_index(day_key) + 1
+    if rows:
+        last = rows[-1]
+        start = datetime.fromisoformat(f"{day_key} {last['planned_end']}:00")
+    else:
+        start = at_time(day, cfg["session_start"])
+    end = start + timedelta(minutes=cfg["new_slot_minutes"])
+    item = {
+        "problem_id": problem_id,
+        "kind": "extra",
+        "slot": slot,
+        "planned_start": start.strftime("%H:%M"),
+        "planned_end": end.strftime("%H:%M"),
+    }
+    store.insert_plan_items(day_key, [item])
+    return plan_summary(store, problems, cfg, day_key)
+
+
 def slot_limit_minutes(item, cfg: dict) -> int:
-    return cfg["new_slot_minutes"] if item["kind"] == NEW else cfg["review_slot_minutes"]
+    # extra（专题加练）与 new 同档：25 分钟，不再被误当 review 的 15 分钟（DESIGN_v3 §5.5）。
+    return cfg["new_slot_minutes"] if item["kind"] in (NEW, "extra") else cfg["review_slot_minutes"]
