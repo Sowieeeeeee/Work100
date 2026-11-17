@@ -32,3 +32,4 @@ Thumbs.db
 *.wav
 .tooling/
 latency_runs/
+release/
