@@ -155,6 +155,22 @@ class Store:
                     attempts INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS interviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL, problem_id INTEGER NOT NULL,
+                    mode TEXT NOT NULL, minutes INTEGER NOT NULL, deadline TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    first_run_sec INTEGER, runs INTEGER NOT NULL DEFAULT 0,
+                    passed INTEGER, total INTEGER, pass_rate REAL, elapsed_sec INTEGER,
+                    code TEXT NOT NULL DEFAULT '',
+                    outline_text TEXT, outline_sec INTEGER,
+                    impression REAL
+                );
+                CREATE TABLE IF NOT EXISTS interview_qa (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    interview_id INTEGER NOT NULL, q TEXT NOT NULL, a TEXT,
+                    score REAL, created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -733,6 +749,70 @@ class Store:
                 "best_rate=MAX(best_rate, excluded.best_rate), attempts=attempts+1, updated_at=excluded.updated_at",
                 (problem_id, pass_rate, now_iso()),
             )
+
+    # ---------- 手撕面试（P4） ----------
+    def interview_create(self, problem_id: int, mode: str, minutes: int, deadline: str) -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO interviews(created_at, problem_id, mode, minutes, deadline, status) "
+                "VALUES (?, ?, ?, ?, ?, 'running')",
+                (now_iso(), problem_id, mode, minutes, deadline),
+            )
+            return int(cur.lastrowid)
+
+    def interview_get(self, interview_id: int) -> sqlite3.Row | None:
+        with self.conn() as c:
+            return c.execute("SELECT * FROM interviews WHERE id=?", (interview_id,)).fetchone()
+
+    def interview_set_outline(self, interview_id: int, outline_text: str, outline_sec: int) -> None:
+        with self.conn() as c:
+            c.execute("UPDATE interviews SET outline_text=?, outline_sec=? WHERE id=?",
+                      (outline_text, outline_sec, interview_id))
+
+    def interview_record_run(self, interview_id: int, code: str, passed: int, total: int,
+                             pass_rate: float, first_run_sec: int | None) -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE interviews SET code=?, passed=?, total=?, pass_rate=?, runs=runs+1, "
+                "first_run_sec=COALESCE(first_run_sec, ?) WHERE id=?",
+                (code, passed, total, pass_rate, first_run_sec, interview_id),
+            )
+
+    def interview_finish(self, interview_id: int, code: str, passed: int, total: int,
+                         pass_rate: float, elapsed_sec: int, impression: float,
+                         status: str = "finished") -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE interviews SET status=?, code=?, passed=?, total=?, pass_rate=?, "
+                "elapsed_sec=?, impression=? WHERE id=?",
+                (status, code, passed, total, pass_rate, elapsed_sec, impression, interview_id),
+            )
+
+    def interview_history(self, limit: int = 20) -> list[sqlite3.Row]:
+        with self.conn() as c:
+            return c.execute(
+                "SELECT * FROM interviews WHERE status != 'running' ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def interview_recent_problem_ids(self, n: int) -> set[int]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT problem_id FROM interviews ORDER BY id DESC LIMIT ?", (n,)
+            ).fetchall()
+        return {int(r["problem_id"]) for r in rows}
+
+    def interview_qa_add(self, interview_id: int, q: str, a: str, score: float) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO interview_qa(interview_id, q, a, score, created_at) VALUES (?, ?, ?, ?, ?)",
+                (interview_id, q, a, score, now_iso()),
+            )
+
+    def interview_qa_list(self, interview_id: int) -> list[sqlite3.Row]:
+        with self.conn() as c:
+            return c.execute(
+                "SELECT * FROM interview_qa WHERE interview_id=? ORDER BY id", (interview_id,)
+            ).fetchall()
 
     def last_session_for_item(self, item_id: int) -> sqlite3.Row | None:
         with self.conn() as c:

@@ -652,6 +652,135 @@ class App:
     def exam_history(self) -> dict:
         return {"exams": [dict(r) for r in self.store.exam_history()]}
 
+    # ---- 手撕面试（P4） ----
+    def _interview_running(self, interview_id) -> dict:
+        row = self.store.interview_get(int(interview_id))
+        if not row:
+            raise ValueError("面试不存在")
+        if row["status"] != "running":
+            raise ValueError("面试已结束")
+        return row
+
+    @staticmethod
+    def _impression(outline_text: str | None, pass_rate: float, runs: int, qa_scores: list[float]) -> float:
+        # 0.3 口述完整度 + 0.4 一次成型 + 0.3 追问应答（DESIGN_v3 §7.2，离线规则版）。
+        outline_len = len((outline_text or "").strip())
+        outline_score = 100.0 if outline_len >= 60 else round(outline_len / 60 * 100, 1)
+        if pass_rate >= 100 and runs <= 1:
+            one_shot = 100.0
+        elif pass_rate >= 100:
+            one_shot = 80.0
+        elif pass_rate >= 50:
+            one_shot = 55.0
+        else:
+            one_shot = 20.0
+        qa_score = round(sum(qa_scores) / len(qa_scores), 1) if qa_scores else 50.0
+        return round(0.3 * outline_score + 0.4 * one_shot + 0.3 * qa_score, 1)
+
+    def interview_start(self, payload: dict) -> dict:
+        minutes = min(90, max(15, int(payload.get("minutes", 35))))
+        difficulty = payload.get("difficulty", "mixed")
+        recent = self.store.interview_recent_problem_ids(10)
+        pool = [p for p in problem_source.all_problems() if p.get("id") and p["id"] not in recent]
+        if difficulty in ("easy", "medium", "hard"):
+            cn = {"easy": "简单", "medium": "中等", "hard": "困难"}[difficulty]
+            same = [p for p in pool if p.get("difficulty") == cn]
+            if same:
+                pool = same
+        if not pool:
+            raise ValueError("题库为空，无法开始面试")
+        problem = random.choice(pool)
+        deadline = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        interview_id = self.store.interview_create(problem["id"], "core", minutes, deadline)
+        md = materials.generate_statement(problem, "", with_reference=False)
+        return {
+            "interview_id": interview_id, "deadline": deadline, "minutes": minutes,
+            "problem": {
+                "id": problem["id"], "title": problem["title"],
+                "difficulty": problem.get("difficulty", ""),
+                "statement_html": markdown_to_html(md),
+            },
+        }
+
+    def interview_outline(self, payload: dict) -> dict:
+        iv = self._interview_running(payload.get("interview_id"))
+        outline = payload.get("outline_text") or ""
+        sec = int(payload.get("outline_sec") or 0)
+        self.store.interview_set_outline(iv["id"], outline, sec)
+        return {"interview_id": iv["id"], "outline_locked": True}
+
+    def interview_run(self, payload: dict) -> dict:
+        iv = self._interview_running(payload.get("interview_id"))
+        code = payload.get("code")
+        if not isinstance(code, str):
+            raise ValueError("代码必须是字符串")
+        problem = problem_source.find_problem(iv["problem_id"])
+        if not problem:
+            raise ValueError("找不到题目")
+        t0 = datetime.now()
+        result = self.run_detached(problem, iv["mode"], code)
+        first_sec = int((datetime.now() - t0).total_seconds()) if iv["first_run_sec"] is None else None
+        m = result["metrics"]
+        self.store.interview_record_run(iv["id"], code, m["passed"], m["total"], m["pass_rate"], first_sec)
+        failed = [r["index"] for r in result["results"] if r["status"] != "pass"]
+        return {"problem_id": iv["problem_id"], "passed": m["passed"], "total": m["total"],
+                "pass_rate": m["pass_rate"], "failed_indexes": failed}
+
+    def interview_submit(self, payload: dict) -> dict:
+        iv = self._interview_running(payload.get("interview_id"))
+        code = payload.get("code") or ""
+        problem = problem_source.find_problem(iv["problem_id"])
+        if not problem:
+            raise ValueError("找不到题目")
+        result = self.run_detached(problem, iv["mode"], code)
+        m = result["metrics"]
+        created = datetime.fromisoformat(iv["created_at"])
+        elapsed = int((datetime.now() - created).total_seconds())
+        qa_scores = [float(r["score"]) for r in self.store.interview_qa_list(iv["id"]) if r["score"] is not None]
+        impression = self._impression(iv["outline_text"], m["pass_rate"], iv["runs"] + 1, qa_scores)
+        self.store.interview_finish(iv["id"], code, m["passed"], m["total"], m["pass_rate"], elapsed, impression)
+        xp = motivation.award(self.store, "interview_done", iv["id"])
+        return {
+            "interview_id": iv["id"], "passed": m["passed"], "total": m["total"],
+            "pass_rate": m["pass_rate"], "elapsed_sec": elapsed,
+            "impression": impression, "runs": iv["runs"] + 1,
+            "first_run_sec": iv["first_run_sec"], **xp,
+        }
+
+    def interview_abandon(self, payload: dict) -> dict:
+        iv = self._interview_running(payload.get("interview_id"))
+        self.store.interview_finish(iv["id"], iv["code"], None, None, None, None, None, status="abandoned")
+        return {"interview_id": iv["id"], "status": "abandoned"}
+
+    def interview_followup(self, payload: dict) -> dict:
+        iv = self.store.interview_get(int(payload.get("interview_id")))
+        if not iv or iv["status"] != "finished":
+            raise ValueError("面试不存在或尚未结束")
+        answer = payload.get("answer") or ""
+        # 离线追问：按关键词粗略给分（P5 起接 dsh 教练）。
+        score = 80.0 if len(answer.strip()) >= 20 else (40.0 if answer.strip() else 0.0)
+        question = payload.get("question") or "请讲一下你的时间/空间复杂度，以及边界条件怎么处理？"
+        self.store.interview_qa_add(iv["id"], question, answer, score)
+        return {"interview_id": iv["id"], "score": score}
+
+    def interview_report(self, interview_id: int) -> dict:
+        iv = self.store.interview_get(int(interview_id))
+        if not iv or iv["status"] != "finished":
+            raise ValueError("面试不存在或尚未结束")
+        problem = problem_source.find_problem(iv["problem_id"])
+        return {
+            "interview_id": iv["id"], "created_at": iv["created_at"], "deadline": iv["deadline"],
+            "problem_id": iv["problem_id"],
+            "title": problem["title"] if problem else f"题目 {iv['problem_id']}",
+            "passed": iv["passed"], "total": iv["total"], "pass_rate": iv["pass_rate"],
+            "elapsed_sec": iv["elapsed_sec"], "runs": iv["runs"], "first_run_sec": iv["first_run_sec"],
+            "outline_text": iv["outline_text"], "impression": iv["impression"],
+            "code": iv["code"], "qa": [dict(r) for r in self.store.interview_qa_list(int(interview_id))],
+        }
+
+    def interview_history(self) -> dict:
+        return {"interviews": [dict(r) for r in self.store.interview_history()]}
+
 
 def _validate_config(cfg: dict) -> None:
     try:
@@ -833,6 +962,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/exam":
                 eid = int((parse_qs(parsed.query).get("id") or ["0"])[0])
                 self._json({"ok": True, **self.app.exam_report(eid)})
+            elif path == "/api/interview/history":
+                self._json({"ok": True, **self.app.interview_history()})
+            elif path == "/api/interview":
+                iid = int((parse_qs(parsed.query).get("id") or ["0"])[0])
+                self._json({"ok": True, **self.app.interview_report(iid)})
             elif path == "/api/statement":
                 query = parse_qs(parsed.query)
                 pid = int((query.get("id") or ["0"])[0])
@@ -886,6 +1020,13 @@ class Handler(BaseHTTPRequestHandler):
                     data = self.app.exam_submit(payload)
                 self._json({"ok": True, **data})
                 return
+            if path in ("/api/interview/run", "/api/interview/submit"):
+                if path == "/api/interview/run":
+                    data = self.app.interview_run(payload)
+                else:
+                    data = self.app.interview_submit(payload)
+                self._json({"ok": True, **data})
+                return
             with self.app.lock:
                 if path == "/api/start":
                     data = self.app.start(payload)
@@ -911,6 +1052,14 @@ class Handler(BaseHTTPRequestHandler):
                     data = self.app.exam_save(payload)
                 elif path == "/api/exam/abandon":
                     data = self.app.exam_abandon(payload)
+                elif path == "/api/interview/start":
+                    data = self.app.interview_start(payload)
+                elif path == "/api/interview/outline":
+                    data = self.app.interview_outline(payload)
+                elif path == "/api/interview/abandon":
+                    data = self.app.interview_abandon(payload)
+                elif path == "/api/interview/followup":
+                    data = self.app.interview_followup(payload)
                 else:
                     self._error("未知路径", 404)
                     return

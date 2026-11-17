@@ -368,7 +368,7 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
     <button class="tab on" data-view="practice">练习计划</button>
     <button class="tab" data-view="topic">专题练习</button>
     <button class="tab" data-view="exam">模拟考试</button>
-    <button class="tab" data-view="interview" data-locked="1">手撕面试</button>
+    <button class="tab" data-view="interview">手撕面试</button>
     <button class="tab" data-view="report" data-locked="1">复盘报告</button>
   </div>
 
@@ -532,6 +532,49 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
   </div>
 </div>
 
+<div class="ws hidden" id="interviewShell">
+  <div class="wshead">
+    <div class="wsleft">
+      <button class="wsclose" id="interviewBack">←</button>
+      <div class="wstitle"><b>手撕面试</b><span class="pill warn">严格模式</span></div>
+    </div>
+    <div class="wsright">
+      <span class="chip" id="interviewClock">--:--</span>
+      <button class="btn primary" id="interviewSubmit">提交并结束</button>
+    </div>
+  </div>
+  <div class="examconfig" id="interviewConfig">
+    <div class="panel pad" style="max-width:520px;margin:6vh auto">
+      <div class="sect-head"><h2>面试设置</h2></div>
+      <div class="field"><label>时长（分钟）</label><input type="number" id="interviewMinutes" min="15" max="90" value="35"></div>
+      <div class="field"><label>难度</label>
+        <select id="interviewDiff"><option value="mixed">混合</option><option value="easy">简单</option><option value="medium">中等</option><option value="hard">困难</option></select>
+      </div>
+      <div class="tip">锁定核心代码模式，隐藏提示/参考/重置；先口述思路，再限时手撕。</div>
+      <div class="mfoot"><button class="btn primary" id="interviewStartBtn">开始面试</button></div>
+    </div>
+  </div>
+  <div class="examconfig hidden" id="interviewOutline">
+    <div class="panel pad" style="max-width:760px;margin:4vh auto">
+      <div class="sect-head"><h2>口述思路（限时 3 分钟）</h2></div>
+      <div class="field"><label>思路 / 数据结构 / 时间复杂度 / 边界条件</label>
+        <textarea id="outlineText" rows="8" placeholder="例：用哈希表记录前缀和…… 时间 O(n)，空间 O(n)…… 边界：空数组、全 0……"></textarea></div>
+      <div class="mfoot"><button class="btn primary" id="outlineSubmit">提交思路，开始手撕</button></div>
+    </div>
+  </div>
+  <div class="exambody hidden" id="interviewBody">
+    <div class="examleft"><div class="examstmt" id="interviewStmt"></div></div>
+    <div class="examright">
+      <div class="edtop"><span id="interviewTitle">--</span><span>核心代码模式（锁定）</span></div>
+      <div class="edwrap" style="flex:1;min-height:0">
+        <textarea class="editor" id="interviewArea" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"
+          style="height:100%;min-height:240px"></textarea>
+      </div>
+      <div class="examactions"><button class="btn" id="interviewRun">运行</button><span class="codestate" id="interviewRes">未运行</span></div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -651,6 +694,7 @@ function switchView(view){
   const btn = document.querySelector('#navTabs [data-view="' + view + '"]');
   if(btn && btn.dataset.locked){ toast("该功能将在后续阶段开放"); return; }
   if(view === "exam"){ openExam(); return; }
+  if(view === "interview"){ openInterview(); return; }
   activeView = view;
   document.querySelectorAll("#navTabs .tab").forEach(t => t.classList.toggle("on", t.dataset.view === view));
   $("#viewPractice").classList.toggle("hidden", view !== "practice");
@@ -801,6 +845,94 @@ function tickExam(){
   const left = Math.max(0, Math.floor((exam.deadline.getTime() - Date.now())/1000));
   $("#examClock").textContent = fmtClock(left);
   if(left <= 0) $("#examClock").textContent = "超时，请交卷";
+}
+
+/* ---------------- 手撕面试（P4） ---------------- */
+const iv = {id:null, problem:null, deadline:null, timer:null, running:false, outlineStart:0};
+function openInterview(){
+  $("#interviewShell").classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  $("#interviewConfig").classList.remove("hidden");
+  $("#interviewOutline").classList.add("hidden");
+  $("#interviewBody").classList.add("hidden");
+}
+function closeInterview(){
+  clearInterval(iv.timer);
+  $("#interviewShell").classList.add("hidden");
+  document.body.style.overflow = "";
+}
+$("#interviewBack").addEventListener("click", () => { if(confirm("退出面试？本场将作废。")) closeInterview(); });
+$("#interviewStartBtn").addEventListener("click", async () => {
+  try{
+    const d = await api("/api/interview/start", {
+      minutes:Number($("#interviewMinutes").value), difficulty:$("#interviewDiff").value
+    });
+    iv.id = d.interview_id; iv.problem = d.problem;
+    iv.deadline = new Date(d.deadline.replace(" ","T"));
+    $("#interviewConfig").classList.add("hidden");
+    $("#interviewOutline").classList.remove("hidden");
+    $("#outlineText").value = "";
+    $("#outlineText").focus();
+    iv.outlineStart = Date.now();
+    iv.timer = setInterval(tickInterview, 1000);
+    tickInterview();
+  }catch(e){ toast(e.message); }
+});
+$("#outlineSubmit").addEventListener("click", async () => {
+  const outline = $("#outlineText").value.trim();
+  const sec = Math.round((Date.now() - iv.outlineStart)/1000);
+  try{
+    await api("/api/interview/outline", {interview_id:iv.id, outline_text:outline, outline_sec:sec});
+    $("#interviewOutline").classList.add("hidden");
+    $("#interviewBody").classList.remove("hidden");
+    $("#interviewTitle").textContent = "#" + iv.problem.id + " " + iv.problem.title;
+    $("#interviewStmt").innerHTML = '<div class="md">' + iv.problem.statement_html + '</div>';
+    $("#interviewArea").value = "";
+    $("#interviewArea").focus();
+  }catch(e){ toast(e.message); }
+});
+$("#interviewRun").addEventListener("click", async () => {
+  if(!iv.id || iv.running) return;
+  iv.running = true;
+  $("#interviewRes").textContent = "判题中…";
+  try{
+    const d = await api("/api/interview/run", {interview_id:iv.id, code:$("#interviewArea").value});
+    $("#interviewRes").textContent = "通过 " + d.passed + "/" + d.total + " · 通过率 " + d.pass_rate + "%" +
+      (d.failed_indexes && d.failed_indexes.length ? " · 失败用例 " + d.failed_indexes.join(",") : "");
+  }catch(e){ $("#interviewRes").textContent = "错误：" + e.message; }
+  finally{ iv.running = false; }
+});
+$("#interviewSubmit").addEventListener("click", async () => {
+  if(!iv.id) return;
+  if(!confirm("确定提交并结束面试？")) return;
+  try{
+    const d = await api("/api/interview/submit", {interview_id:iv.id, code:$("#interviewArea").value});
+    clearInterval(iv.timer);
+    let html = '<div class="donebox"><b>通过率 ' + d.pass_rate + '%</b> · ' + d.passed + '/' + d.total +
+      ' · 用时 ' + minutes(d.elapsed_sec) + ' 分钟 · 运行 ' + d.runs + ' 次</div>' +
+      '<div class="donebox"><b>面试印象分 ' + d.impression + '</b></div>';
+    if(d.xp_gained) html += '<div class="donebox">+' + d.xp_gained + ' XP</div>';
+    (d.new_badges || []).forEach(b => { html += '<div class="donebox">解锁徽章：' + esc(b.name) + '</div>'; });
+    html += '<div class="field"><label>追问：请讲一下你的时间/空间复杂度与边界处理</label>' +
+      '<textarea id="followupA" rows="3"></textarea></div>' +
+      '<div class="mfoot"><button class="btn ghost" id="interviewClose">关闭</button>' +
+      '<button class="btn primary" id="followupSubmit">提交追问</button></div>';
+    openModal("面试结果", html);
+    $("#interviewClose").onclick = () => { closeModal(); closeInterview(); refresh(true); };
+    $("#followupSubmit").onclick = async () => {
+      try{
+        await api("/api/interview/followup", {interview_id:iv.id, answer:$("#followupA").value});
+        toast("追问已记录");
+        $("#followupSubmit").disabled = true;
+      }catch(e){ toast(e.message); }
+    };
+  }catch(e){ toast(e.message); }
+});
+function tickInterview(){
+  if(!iv.deadline) return;
+  const left = Math.max(0, Math.floor((iv.deadline.getTime() - Date.now())/1000));
+  $("#interviewClock").textContent = fmtClock(left);
+  if(left <= 0) $("#interviewClock").textContent = "超时";
 }
 
 function renderItems(){
