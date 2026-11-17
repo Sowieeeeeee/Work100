@@ -52,7 +52,8 @@ def main() -> int:
     check(bool(core.raw_of(first["slug"])), "按 slug 取原始数据")
     check(core.get(99999001) is None, "不存在的 id 返回 None")
     check(core.has_reference(first["id"]), "88 题有 BANK 参考解")
-    check(problem_source.pool().all() == [] or True, "池源可访问（未建池时为空）")
+    pool_all = problem_source.pool().all()
+    check(isinstance(pool_all, list), f"池源可访问（当前 {len(pool_all)} 题）")
     check(problem_source.find_problem(first["id"]) is not None, "全局 find_problem 命中 core")
 
     section("2. official.raw_of 统一入口")
