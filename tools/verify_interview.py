@@ -11,14 +11,28 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from hot100 import dashboard  # noqa: E402
+from hot100.config import load_config  # noqa: E402
+from hot100.materials import load_problems  # noqa: E402
 from hot100.server import App  # noqa: E402
 from hot100.store import Store  # noqa: E402
+
+
+def fresh_app(tmp: Path) -> App:
+    app = App.__new__(App)
+    app.cfg = load_config()
+    app.problems = load_problems()["problems"]
+    app.by_id = {p["id"]: p for p in app.problems}
+    app.port = int(app.cfg["port"])
+    app.lock = threading.Lock()
+    app.store = Store(tmp / "state.db")
+    return app
 
 FAILS: list[str] = []
 CHECKS = 0
@@ -35,9 +49,8 @@ def check(cond: bool, label: str, detail: str = "") -> None:
 
 
 def main() -> int:
-    app = App()
     tmp = Path(tempfile.mkdtemp(prefix="hot100-iv-"))
-    app.store = Store(tmp / "state.db")
+    app = fresh_app(tmp)
 
     def code_runs_count() -> int:
         with app.store.conn() as c:

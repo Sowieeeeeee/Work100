@@ -168,7 +168,7 @@ class App:
             brief = self.problem_brief(pid)
             pstate = problem_rows.get(pid)
             session = self.store.last_session_for_item(row["id"])
-            limit = self.cfg["new_slot_minutes"] if row["kind"] == "new" else self.cfg["review_slot_minutes"]
+            limit = self.cfg["new_slot_minutes"] if row["kind"] in ("new", "extra") else self.cfg["review_slot_minutes"]
             items.append({
                 **brief,
                 "problem_id": pid,
@@ -203,7 +203,8 @@ class App:
 
         new_count = sum(1 for i in items if i["kind"] == "new")
         review_count = sum(1 for i in items if i["kind"] == "review")
-        planned = new_count * self.cfg["new_slot_minutes"] + review_count * self.cfg["review_slot_minutes"]
+        extra_count = sum(1 for i in items if i["kind"] == "extra")
+        planned = (new_count + extra_count) * self.cfg["new_slot_minutes"] + review_count * self.cfg["review_slot_minutes"]
         today = date.today()
         mot = motivation.motivation_state(self.store)
         mot["today"]["planned"] = len(items)
@@ -236,7 +237,7 @@ class App:
         item = self.resolve_item(payload)
         if not item:
             raise ValueError("找不到今天的计划项，请先重排计划")
-        limit = self.cfg["new_slot_minutes"] if item["kind"] == "new" else self.cfg["review_slot_minutes"]
+        limit = self.cfg["new_slot_minutes"] if item["kind"] in ("new", "extra") else self.cfg["review_slot_minutes"]
         result = self.store.start_item(item["id"], limit)
         return {"item_id": item["id"], **result}
 
@@ -247,7 +248,7 @@ class App:
         result = payload.get("result", "")
         if result not in RESULT_LABEL:
             raise ValueError("未知完成状态")
-        limit = self.cfg["new_slot_minutes"] if item["kind"] == "new" else self.cfg["review_slot_minutes"]
+        limit = self.cfg["new_slot_minutes"] if item["kind"] in ("new", "extra") else self.cfg["review_slot_minutes"]
         detail = self.store.finish_item(item["id"], result, str(payload.get("note", "")), limit)
         award_kind = None
         if item["kind"] in ("new", "extra"):
@@ -420,7 +421,12 @@ class App:
         # 池题没有 BANK 参考解，禁用 oracle（否则 KeyError）；主题库题照常补全（DESIGN_v3 §2.3）。
         allow_oracle = problem["id"] in BANK
         cases = official.official_cases(problem, allow_oracle=allow_oracle)
-        return judge.run_cases(problem, mode, code, "<detached>", cases)
+        result = judge.run_cases(problem, mode, code, "<detached>", cases)
+        # 剥离期望输出，防止考试/面试链路某天把整份 result 透传出去（安全兜底）。
+        for row in result["results"]:
+            for key in ("expected", "expected_acm", "expected_lc"):
+                row.pop(key, None)
+        return result
 
     def reset_code(self, payload: dict) -> dict:
         """把当前模式的文件恢复为预生成模板。"""
@@ -609,7 +615,8 @@ class App:
             per.append({"problem_id": pid, "passed": m["passed"], "total": m["total"], "pass_rate": m["pass_rate"]})
             self.store.exam_answer_upsert(exam["id"], pid, "core", code, m["passed"], m["total"], m["pass_rate"])
             self.store.pool_progress_upsert(pid, m["pass_rate"])
-        score = round(100.0 * passed / total, 1) if total else 0.0
+        # score = 各题 pass_rate 的均值（DESIGN_v3 §3.4：score = 三题 pass_rate 均值）。
+        score = round(sum(p["pass_rate"] for p in per) / len(per), 1) if per else 0.0
         deadline = datetime.fromisoformat(exam["deadline"])
         late = 1 if datetime.now() > deadline + timedelta(seconds=30) else 0
         created = datetime.fromisoformat(exam["created_at"])
@@ -717,9 +724,9 @@ class App:
         problem = problem_source.find_problem(iv["problem_id"])
         if not problem:
             raise ValueError("找不到题目")
-        t0 = datetime.now()
         result = self.run_detached(problem, iv["mode"], code)
-        first_sec = int((datetime.now() - t0).total_seconds()) if iv["first_run_sec"] is None else None
+        # first_run_sec = 从面试开始到首次运行的秒数（「首跑时间」，不是判题耗时）。
+        first_sec = int((datetime.now() - datetime.fromisoformat(iv["created_at"])).total_seconds()) if iv["first_run_sec"] is None else None
         m = result["metrics"]
         self.store.interview_record_run(iv["id"], code, m["passed"], m["total"], m["pass_rate"], first_sec)
         failed = [r["index"] for r in result["results"] if r["status"] != "pass"]
@@ -942,10 +949,28 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, message: str, code: int = 400) -> None:
         self._json({"ok": False, "error": message}, code)
 
+    def _origin_ok(self) -> bool:
+        """阻止浏览器跨站请求打到本地服务（本地服务能执行任意 Python）。"""
+        host = (self.headers.get("Host") or "").partition(":")[0].strip().lower()
+        if host and host not in ("127.0.0.1", "localhost"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                oh = (urlparse(origin).hostname or "").lower()
+            except ValueError:
+                return False
+            if oh not in ("127.0.0.1", "localhost"):
+                return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
         try:
+            if not self._origin_ok():
+                self._error("跨站请求被拒绝", 403)
+                return
             if path in ("/", "/index.html"):
                 self._html(dashboard.page())
             elif path == "/api/state":
@@ -990,6 +1015,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if not self._origin_ok():
+            self._error("跨站请求被拒绝", 403)
+            return
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._error("Content-Type 必须是 application/json", 400)
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
             if length > 2_000_000:

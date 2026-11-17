@@ -68,8 +68,16 @@ def main() -> int:
     check(len(remain) < before, "new/review 待办行被清掉")
 
     print("== 专题分组（server.topics 逻辑）")
+    import threading
+    from hot100.config import load_config
     from hot100.server import App
-    app = App()
+    app = App.__new__(App)
+    app.cfg = load_config()
+    app.problems = problems
+    app.by_id = {p["id"]: p for p in problems}
+    app.port = int(app.cfg["port"])
+    app.lock = threading.Lock()
+    app.store = store
     g = app.topics("group")
     o = app.topics("official")
     check(g["view"] == "group" and len(g["topics"]) > 0, f"分组视图有 {len(g['topics'])} 组")

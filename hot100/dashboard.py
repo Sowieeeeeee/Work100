@@ -754,7 +754,7 @@ function openTopicPractice(pid){
 }
 
 /* ---------------- 模拟考试（P3） ---------------- */
-const exam = {id:null, problems:[], cur:0, deadline:null, timer:null, codes:{}, running:false};
+const exam = {id:null, problems:[], cur:0, deadline:null, timer:null, codes:{}, running:false, submitting:false};
 function openExam(){
   $("#examShell").classList.remove("hidden");
   document.body.style.overflow = "hidden";
@@ -808,8 +808,11 @@ async function saveExamDraft(){
   exam.codes[p.id] = $("#examArea").value;
   try{ await api("/api/exam/save", {exam_id:exam.id, problem_id:p.id, code:exam.codes[p.id]}); }catch(e){}
 }
+let examSaveTimer = null;
 $("#examArea").addEventListener("input", () => {
   const p = exam.problems[exam.cur]; if(p) exam.codes[p.id] = $("#examArea").value;
+  clearTimeout(examSaveTimer);
+  examSaveTimer = setTimeout(saveExamDraft, 900);
 });
 $("#examRun").addEventListener("click", async () => {
   const p = exam.problems[exam.cur];
@@ -823,9 +826,9 @@ $("#examRun").addEventListener("click", async () => {
   }catch(e){ $("#examRes").textContent = "错误：" + e.message; }
   finally{ exam.running = false; }
 });
-$("#examSubmit").addEventListener("click", async () => {
-  if(!exam.id) return;
-  if(!confirm("确定交卷？交卷后不能再修改。")) return;
+async function doExamSubmit(){
+  if(!exam.id || exam.submitting) return;
+  exam.submitting = true;
   await saveExamDraft();
   try{
     const answers = exam.problems.map(p => ({problem_id:p.id, code: exam.codes[p.id] || ""}));
@@ -838,17 +841,25 @@ $("#examSubmit").addEventListener("click", async () => {
     html += '<div class="mfoot"><button class="btn primary" id="examClose">关闭</button></div>';
     openModal("考试结果", html);
     $("#examClose").onclick = () => { closeModal(); closeExam(); refresh(true); };
-  }catch(e){ toast(e.message); }
+  }catch(e){ toast(e.message); exam.submitting = false; }
+}
+$("#examSubmit").addEventListener("click", async () => {
+  if(!exam.id || exam.submitting) return;
+  if(!confirm("确定交卷？交卷后不能再修改。")) return;
+  await doExamSubmit();
 });
 function tickExam(){
   if(!exam.deadline) return;
   const left = Math.max(0, Math.floor((exam.deadline.getTime() - Date.now())/1000));
   $("#examClock").textContent = fmtClock(left);
-  if(left <= 0) $("#examClock").textContent = "超时，请交卷";
+  if(left <= 0){
+    $("#examClock").textContent = "超时，自动交卷中…";
+    doExamSubmit();
+  }
 }
 
 /* ---------------- 手撕面试（P4） ---------------- */
-const iv = {id:null, problem:null, deadline:null, timer:null, running:false, outlineStart:0};
+const iv = {id:null, problem:null, deadline:null, timer:null, running:false, outlineStart:0, submitting:false};
 function openInterview(){
   $("#interviewShell").classList.remove("hidden");
   document.body.style.overflow = "hidden";
@@ -902,9 +913,9 @@ $("#interviewRun").addEventListener("click", async () => {
   }catch(e){ $("#interviewRes").textContent = "错误：" + e.message; }
   finally{ iv.running = false; }
 });
-$("#interviewSubmit").addEventListener("click", async () => {
-  if(!iv.id) return;
-  if(!confirm("确定提交并结束面试？")) return;
+async function doInterviewSubmit(){
+  if(!iv.id || iv.submitting) return;
+  iv.submitting = true;
   try{
     const d = await api("/api/interview/submit", {interview_id:iv.id, code:$("#interviewArea").value});
     clearInterval(iv.timer);
@@ -926,13 +937,21 @@ $("#interviewSubmit").addEventListener("click", async () => {
         $("#followupSubmit").disabled = true;
       }catch(e){ toast(e.message); }
     };
-  }catch(e){ toast(e.message); }
+  }catch(e){ toast(e.message); iv.submitting = false; }
+}
+$("#interviewSubmit").addEventListener("click", async () => {
+  if(!iv.id || iv.submitting) return;
+  if(!confirm("确定提交并结束面试？")) return;
+  await doInterviewSubmit();
 });
 function tickInterview(){
   if(!iv.deadline) return;
   const left = Math.max(0, Math.floor((iv.deadline.getTime() - Date.now())/1000));
   $("#interviewClock").textContent = fmtClock(left);
-  if(left <= 0) $("#interviewClock").textContent = "超时";
+  if(left <= 0){
+    $("#interviewClock").textContent = "超时，自动提交中…";
+    doInterviewSubmit();
+  }
 }
 
 function renderItems(){
