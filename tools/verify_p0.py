@@ -126,6 +126,22 @@ def main() -> int:
         for name, value in saved.items():
             setattr(materials, name, value)
 
+    section("6. judge.run_cases / App.run_detached")
+    from hot100 import judge
+    from hot100.server import App
+
+    reference_path = materials.problem_paths(first["id"], first["slug"])["reference"]
+    acm_code = reference_path.read_text(encoding="utf-8")
+    a = judge.run(first, "acm", acm_code, str(reference_path))
+    b = judge.run_cases(first, "acm", acm_code, str(reference_path), official.official_cases(first))
+    check(a["metrics"]["total"] == b["metrics"]["total"], "run_cases 用例数与 run 一致")
+    check(a["metrics"]["passed"] == b["metrics"]["passed"], "run_cases 通过数与 run 一致")
+    check(b["metrics"]["pass_rate"] == 100.0, "参考解在 run_cases 下全过")
+
+    d = App.run_detached(None, first, "acm", acm_code)
+    check(d["metrics"]["pass_rate"] == 100.0, "run_detached 不落盘也能全过")
+    check("results" in d and d["mode"] == "acm", "run_detached 返回结果结构完整")
+
     print(f"\nP0 检查项：{CHECKS}，失败：{len(FAILS)}")
     for item in FAILS:
         print(f"  - {item}")

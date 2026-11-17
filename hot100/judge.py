@@ -93,9 +93,13 @@ def _payload(problem: dict, mode: str, code: str, path: str, cases: list[dict]) 
 
 def run(problem: dict, mode: str, code: str, path: str) -> dict:
     """跑全部官方用例，返回逐用例结果与通过率指标。"""
+    return run_cases(problem, mode, code, path, official.official_cases(problem))
+
+
+def run_cases(problem: dict, mode: str, code: str, path: str, cases: list[dict]) -> dict:
+    """跑一组给定用例（考试/面试复用，不依赖 BANK，不落盘）。"""
     if mode not in MODES:
         raise ValueError(f"未知模式 {mode}")
-    cases = official.official_cases(problem)
     slim = [
         {
             "index": c["index"],

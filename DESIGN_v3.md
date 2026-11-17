@@ -84,21 +84,18 @@ def infer_io(raw: dict, slug: str) -> tuple[dict | None, str]   # (io, 淘汰原
 | 入口 | 语义 | 落盘 | 写 `code_runs` | 用途 |
 | --- | --- | --- | --- | --- |
 | `App.run(payload)` | 练习（现状） | ✅ | ✅ | P1/P2 练习工作台 |
-| `App.run_detached(problem, mode, code, cases)` | 一次性判题 | ❌ | ❌ | 考试、面试、教练自检 |
+| `App.run_detached(problem, mode, code)` | 一次性判题 | ❌ | ❌ | 考试、面试、教练自检 |
 | `App.compile_check(code)` | 后台预编译 | ❌ | ❌ | 编辑器状态灯 |
 
-- `run_detached` 复用 `judge.run` 的核心逻辑，抽出 `judge.run_cases(problem, mode, code, path, cases)`；`judge.run` 变成 `run_cases` + `official_cases` 的薄包装。**`verify_judge` 的输出必须保持 0 失败。**
+- `run_detached` 内部取 `official.official_cases(problem)` 后复用抽出后的 `judge.run_cases(problem, mode, code, path, cases)`；`judge.run` 变成 `run_cases` + `official_cases` 的薄包装。**`verify_judge` 的输出必须保持 0 失败。**
 
 ### 2.4 前端工作台存储后端 `hot100/dashboard.py`
 
-```js
-ws.storage = {kind:"file"}            // 默认；kind ∈ file|exam|interview
-ws.storage = {kind:"exam", examId, problemId}
-```
+**v3 实施修订（比 v2 更省风险）**：不改造 `openWorkspace` / `flushSave`。考试与面试用**独立的全屏壳**（自己的 textarea、自己的 `/api/exam/save`、`/api/interview/save`），配合 `run_detached` 天然不落盘、不污染 `solutions/` 与 `code_runs`。这样把 A6 的风险从「改造一个 58KB 单文件里的核心工作台」降到「新增一个独立的壳」。
 
-- `flushSave()`（`dashboard.py:836`）/`loadCode()`（`:859`）按 `ws.storage.kind` 分派到 `/api/code` 或 `/api/exam/save` / `/api/interview/save`。
-- `render()`（`:479`）改为 `renderActiveTab()`：只重绘当前 section；轮询（`:1123`）只更新 hero 数字与计时条，**绝不重绘考试/面试壳**。
-- 关键图标/按钮在 `ws.storage.kind !== "file"` 时隐藏：`#wsReset`、`#wsStatement`（考试中题面在考试壳内）、模式切换 `#wsModes`。
+- `openWorkspace` / `flushSave` / `loadCode`（`dashboard.py:836`/`:859`/`:869`）保持字节不变。
+- 考试/面试壳的编辑器复用 `edRender` 的同款行号/高亮渲染函数（把参数化后的渲染器提为共享 helper，见 P3）。
+- `render()`（`:479`）在 P1 落地 tab 时改成 `renderActiveTab()`，轮询（`:1123`）只刷新 hero 数字与计时条，不重绘考试/面试壳。
 
 ### 2.5 P0 验收
 

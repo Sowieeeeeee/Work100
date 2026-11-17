@@ -389,6 +389,20 @@ class App:
             } if best else None,
         }
 
+    def run_detached(self, problem: dict, mode: str, code: str) -> dict:
+        """考试/面试判题：不落盘、不记 code_runs、不切模式（DESIGN_v3 §2.3）。"""
+        if mode not in judge.MODES:
+            raise ValueError(f"未知模式 {mode}")
+        if not isinstance(code, str):
+            raise ValueError("代码必须是字符串")
+        code = code.replace("\r\n", "\n").replace("\r", "\n")
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            raise ValueError(f"语法错误：第 {exc.lineno or '?'} 行 {exc.msg}") from exc
+        cases = official.official_cases(problem)
+        return judge.run_cases(problem, mode, code, "<detached>", cases)
+
     def reset_code(self, payload: dict) -> dict:
         """把当前模式的文件恢复为预生成模板。"""
         problem = self.resolve_problem(payload)
