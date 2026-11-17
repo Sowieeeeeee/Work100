@@ -179,6 +179,18 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
 .tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
 .tab{border:1px solid var(--line);background:#0c1626;color:var(--muted);border-radius:8px;padding:6px 12px;font-size:12px}
 .tab.on{border-color:rgba(45,212,191,.5);color:#99f6e4;background:rgba(45,212,191,.08)}
+.hero{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.hero .lv{background:linear-gradient(180deg,rgba(45,212,191,.22),rgba(45,212,191,.08));
+  border:1px solid rgba(45,212,191,.45);color:#99f6e4;border-radius:99px;padding:4px 13px;font-size:12px;font-weight:700}
+.hero .xpbar{width:110px;height:7px;background:#0a1526;border:1px solid #1a2a45;border-radius:99px;overflow:hidden}
+.hero .xpbar i{display:block;height:100%;background:linear-gradient(90deg,#14b8a6,#2dd4bf)}
+.badgegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.badge{background:#0c1626;border:1px solid var(--line);border-radius:12px;padding:13px 10px;text-align:center}
+.badge .ico{font-size:25px;line-height:1}
+.badge b{display:block;font-size:13px;margin-top:7px}
+.badge span{display:block;color:var(--dim);font-size:11px;margin-top:3px;line-height:1.5}
+.badge.off{opacity:.38;filter:grayscale(.7)}
+.badge.on{border-color:rgba(45,212,191,.4);background:linear-gradient(180deg,rgba(45,212,191,.10),#0c1626)}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(10px);
   background:#13223a;border:1px solid #2b4668;color:#e6f0ff;padding:10px 16px;border-radius:10px;
   font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:99;max-width:80vw}
@@ -318,6 +330,14 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
       <button class="iconbtn" id="btnSettings">设置</button>
       <button class="iconbtn" id="btnReplan">重排今日</button>
     </div>
+  </div>
+
+  <div class="hero" style="margin-bottom:14px">
+    <span class="lv" id="heroLv">Lv1</span>
+    <div class="xpbar" title="等级经验"><i id="heroXpBar" style="width:0%"></i></div>
+    <span class="chip" id="heroXp">0 XP</span>
+    <span class="chip" id="heroStreak">🔥 0 天</span>
+    <button class="iconbtn" id="btnBadges">🏅 徽章 <span id="heroBadgeCount">0</span></button>
   </div>
 
   <div class="warn hidden" id="warnBox"></div>
@@ -493,6 +513,7 @@ function render(){
     " · 复习 " + state.items.filter(i=>i.kind==="review").length +
     " · 预计 " + state.planned_minutes + " 分钟";
   $("#paceMeta").textContent = state.session_start + "–" + state.session_end;
+  renderHero();
 
   const warn = $("#warnBox");
   if(state.warnings && state.warnings.length){
@@ -507,6 +528,34 @@ function render(){
   renderTimer();
   renderRecent();
 }
+
+function renderHero(){
+  const m = (state && state.motivation) || {};
+  $("#heroLv").textContent = "Lv" + (m.level || 1);
+  const need = m.level_need || 1;
+  $("#heroXpBar").style.width = Math.min(100, Math.round((m.level_xp || 0) * 100 / need)) + "%";
+  $("#heroXp").textContent = (m.xp || 0) + " XP · " + (m.level_xp || 0) + "/" + need;
+  $("#heroStreak").textContent = "🔥 " + (m.streak || 0) + " 天";
+  $("#heroBadgeCount").textContent = m.badge_count || 0;
+}
+const BADGE_ICONS = {
+  first_ac:"🗡️", streak7:"🔥", streak30:"🌕", hard_first:"🦴", exam_pass:"📝",
+  exam_full:"💯", interview_debut:"🎤", interview_full:"🏆", topic_master:"🧭",
+  night_owl:"🦉", century:"⚒️", conqueror:"👑"
+};
+async function openBadges(){
+  try{
+    const d = await api("/api/badges");
+    const html = '<div class="badgegrid">' + d.badges.map(b =>
+      '<div class="badge ' + (b.unlocked ? "on" : "off") + '">' +
+      '<div class="ico">' + (BADGE_ICONS[b.id] || "🏅") + '</div>' +
+      '<b>' + esc(b.name) + '</b><span>' + esc(b.desc) + '</span>' +
+      '<div class="pill ' + (b.unlocked ? "ok" : "muted") + '" style="margin-top:7px">' +
+      (b.unlocked ? "已解锁" : "未解锁") + '</div></div>').join("") + '</div>';
+    openModal("徽章墙", html, true);
+  }catch(e){ toast(e.message); }
+}
+$("#btnBadges").addEventListener("click", openBadges);
 
 function renderItems(){
   const box = $("#items");
@@ -698,6 +747,8 @@ function openFinish(i){
       const r = await api("/api/finish", {item_id:i.id, result, note});
       closeModal();
       toast("已记录：" + (RESULT[r.result] ? RESULT[r.result][0] : r.result));
+      if(r.xp_gained) toast("+" + r.xp_gained + " XP");
+      (r.new_badges || []).forEach(b => toast("解锁徽章：" + b.name));
       selectedId = i.id;
       await refresh(true);
     }catch(e){ toast(e.message); }

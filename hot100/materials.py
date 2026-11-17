@@ -355,16 +355,16 @@ def ensure_problem(problem: dict, create_solution: bool = True, with_reference: 
     paths["reference"].parent.mkdir(parents=True, exist_ok=True)
     ref_name = paths["reference"].name
     paths["statement"].write_text(
-        generate_statement(problem, ref_name, with_reference=with_reference), encoding="utf-8"
+        generate_statement(problem, ref_name, with_reference=with_reference), encoding="utf-8", newline="\n"
     )
     if with_reference:
         # 池题没有 BANK 参考解，硬写会 KeyError（DESIGN_v3 §2.1）。
-        paths["reference"].write_text(generate_reference(problem), encoding="utf-8")
+        paths["reference"].write_text(generate_reference(problem), encoding="utf-8", newline="\n")
     if create_solution:
         if not paths["solution"].exists():
-            paths["solution"].write_text(generate_practice(problem), encoding="utf-8")
+            paths["solution"].write_text(generate_practice(problem), encoding="utf-8", newline="\n")
         if not paths["core"].exists():
-            paths["core"].write_text(generate_core(problem), encoding="utf-8")
+            paths["core"].write_text(generate_core(problem), encoding="utf-8", newline="\n")
     return paths
 
 

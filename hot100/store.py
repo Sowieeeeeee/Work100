@@ -118,6 +118,20 @@ class Store:
                     problem_id INTEGER PRIMARY KEY,
                     mode TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS xp_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    ref_id INTEGER NOT NULL,
+                    xp INTEGER NOT NULL,
+                    day TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(kind, ref_id)
+                );
+                CREATE TABLE IF NOT EXISTS achievements (
+                    id TEXT PRIMARY KEY,
+                    unlocked_at TEXT NOT NULL,
+                    day TEXT NOT NULL
+                );
                 """
             )
 
@@ -484,6 +498,95 @@ class Store:
             return c.execute(
                 "SELECT * FROM sessions WHERE ended_at IS NOT NULL ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
+
+    # ---------- 激励（P1） ----------
+    def grant_xp(self, kind: str, ref_id: int, xp: int, day: str | None = None) -> tuple[bool, int]:
+        """同 kind+ref 只发一次；返回 (是否新发, 实际 XP)。"""
+        day = day or today_iso()
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO xp_events(kind, ref_id, xp, day, created_at) VALUES (?, ?, ?, ?, ?)",
+                (kind, int(ref_id), int(xp), day, now_iso()),
+            )
+            return (cur.rowcount > 0, int(xp) if cur.rowcount > 0 else 0)
+
+    def xp_total(self) -> int:
+        with self.conn() as c:
+            return int(c.execute("SELECT COALESCE(SUM(xp),0) AS n FROM xp_events").fetchone()["n"] or 0)
+
+    def xp_by_kind(self) -> dict[str, int]:
+        with self.conn() as c:
+            rows = c.execute("SELECT kind, COALESCE(SUM(xp),0) AS n FROM xp_events GROUP BY kind").fetchall()
+        return {row["kind"]: int(row["n"]) for row in rows}
+
+    def active_days(self) -> set[str]:
+        """有完成记录的活跃日（sessions 已结束才计数；exams/interviews 表在 P3/P4 加入）。"""
+        days: set[str] = set()
+        with self.conn() as c:
+            for row in c.execute("SELECT DISTINCT day FROM sessions WHERE ended_at IS NOT NULL"):
+                days.add(row["day"])
+            if self._has_table(c, "exams"):
+                for row in c.execute("SELECT DISTINCT created_at FROM exams WHERE status != 'running'"):
+                    days.add(row["created_at"][:10])
+            if self._has_table(c, "interviews"):
+                for row in c.execute("SELECT DISTINCT created_at FROM interviews WHERE status != 'running'"):
+                    days.add(row["created_at"][:10])
+        return days
+
+    def _has_table(self, c, name: str) -> bool:
+        row = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        return row is not None
+
+    def unlocked_achievements(self) -> set[str]:
+        with self.conn() as c:
+            return {row["id"] for row in c.execute("SELECT id FROM achievements")}
+
+    def unlock_achievement(self, badge_id: str, day: str | None = None) -> bool:
+        day = day or today_iso()
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO achievements(id, unlocked_at, day) VALUES (?, ?, ?)",
+                (badge_id, now_iso(), day),
+            )
+            return cur.rowcount > 0
+
+    def full_run_count(self) -> int:
+        with self.conn() as c:
+            return int(c.execute("SELECT COUNT(*) AS n FROM code_runs WHERE pass_rate >= 100").fetchone()["n"] or 0)
+
+    def night_owl(self) -> bool:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) AS n FROM sessions WHERE ended_at IS NOT NULL "
+                "AND CAST(substr(ended_at, 12, 2) AS INTEGER) >= 22"
+            ).fetchone()
+        return int(row["n"] or 0) > 0
+
+    def exam_best_score(self) -> float:
+        with self.conn() as c:
+            if not self._has_table(c, "exams"):
+                return 0.0
+            row = c.execute("SELECT MAX(score) AS m FROM exams WHERE status='finished'").fetchone()
+        return float(row["m"] or 0.0) if row else 0.0
+
+    def interview_count(self) -> int:
+        with self.conn() as c:
+            if not self._has_table(c, "interviews"):
+                return 0
+            row = c.execute("SELECT COUNT(*) AS n FROM interviews WHERE status='finished'").fetchone()
+        return int(row["n"] or 0) if row else 0
+
+    def interview_best_rate(self) -> float:
+        with self.conn() as c:
+            if not self._has_table(c, "interviews"):
+                return 0.0
+            row = c.execute("SELECT MAX(pass_rate) AS m FROM interviews WHERE status='finished'").fetchone()
+        return float(row["m"] or 0.0) if row else 0.0
+
+    def topic_mastered(self) -> bool:
+        return self.get_meta("topic_master") == "1"
 
     def last_session_for_item(self, item_id: int) -> sqlite3.Row | None:
         with self.conn() as c:

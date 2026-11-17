@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import dashboard, judge, materials, notify, official, planner
+from . import dashboard, judge, materials, motivation, notify, official, planner
 from .bank import BANK
 from .config import ROOT, load_config, save_config
 from .store import RESULT_LABEL, Store
@@ -204,6 +204,8 @@ class App:
         review_count = sum(1 for i in items if i["kind"] == "review")
         planned = new_count * self.cfg["new_slot_minutes"] + review_count * self.cfg["review_slot_minutes"]
         today = date.today()
+        mot = motivation.motivation_state(self.store)
+        mot["today"]["planned"] = len(items)
         return {
             "day": day,
             "day_week": f"{day} 周{WEEK[today.weekday()]}",
@@ -221,8 +223,12 @@ class App:
             "session_start": self.cfg["session_start"],
             "session_end": self.cfg["session_end"],
             "now": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "motivation": mot,
             "config": {k: self.cfg.get(k) for k in CONFIG_FIELDS},
         }
+
+    def badge_list(self) -> dict:
+        return {"badges": motivation.badges(self.store)}
 
     # ---- 动作
     def start(self, payload: dict) -> dict:
@@ -242,7 +248,13 @@ class App:
             raise ValueError("未知完成状态")
         limit = self.cfg["new_slot_minutes"] if item["kind"] == "new" else self.cfg["review_slot_minutes"]
         detail = self.store.finish_item(item["id"], result, str(payload.get("note", "")), limit)
-        return {"item_id": item["id"], **detail}
+        award_kind = None
+        if item["kind"] in ("new", "extra"):
+            award_kind = {"done": "ac_new", "hinted": "ac_hinted", "rewritten": "ac_rewritten"}.get(detail["result"])
+        elif item["kind"] == "review" and detail["result"] != "unfinished":
+            award_kind = "review_done"
+        xp = motivation.award(self.store, award_kind, item["id"]) if award_kind else {"xp_gained": 0, "new_badges": []}
+        return {"item_id": item["id"], **detail, **xp}
 
     def hint(self, payload: dict) -> dict:
         problem = self.resolve_problem(payload)
@@ -623,6 +635,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._html(dashboard.page())
             elif path == "/api/state":
                 self._json({"ok": True, "state": self.app.state()})
+            elif path == "/api/badges":
+                self._json({"ok": True, **self.app.badge_list()})
             elif path == "/api/statement":
                 query = parse_qs(parsed.query)
                 pid = int((query.get("id") or ["0"])[0])
