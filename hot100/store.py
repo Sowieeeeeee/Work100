@@ -132,6 +132,29 @@ class Store:
                     unlocked_at TEXT NOT NULL,
                     day TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS exams (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL, source TEXT NOT NULL,
+                    minutes INTEGER NOT NULL, deadline TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    problem_ids TEXT NOT NULL, score REAL,
+                    passed INTEGER, total INTEGER, elapsed_sec INTEGER,
+                    late INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS exam_answers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    exam_id INTEGER NOT NULL, problem_id INTEGER NOT NULL,
+                    mode TEXT NOT NULL, code TEXT NOT NULL DEFAULT '',
+                    passed INTEGER, total INTEGER, pass_rate REAL, updated_at TEXT NOT NULL,
+                    UNIQUE(exam_id, problem_id)
+                );
+                CREATE TABLE IF NOT EXISTS pool_progress (
+                    problem_id INTEGER PRIMARY KEY,
+                    status TEXT NOT NULL DEFAULT 'todo',
+                    best_rate REAL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT
+                );
                 """
             )
 
@@ -624,6 +647,92 @@ class Store:
 
     def topic_mastered(self) -> bool:
         return self.get_meta("topic_master") == "1"
+
+    # ---------- 模拟考试（P3） ----------
+    def exam_create(self, source: str, minutes: int, deadline: str, problem_ids: list[int]) -> int:
+        with self.conn() as c:
+            cur = c.execute(
+                "INSERT INTO exams(created_at, source, minutes, deadline, status, problem_ids) "
+                "VALUES (?, ?, ?, ?, 'running', ?)",
+                (now_iso(), source, minutes, deadline, json.dumps(problem_ids)),
+            )
+            return int(cur.lastrowid)
+
+    def exam_get(self, exam_id: int) -> sqlite3.Row | None:
+        with self.conn() as c:
+            return c.execute("SELECT * FROM exams WHERE id=?", (exam_id,)).fetchone()
+
+    def exam_answer_upsert(self, exam_id: int, problem_id: int, mode: str, code: str,
+                           passed: int, total: int, pass_rate: float) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO exam_answers(exam_id, problem_id, mode, code, passed, total, pass_rate, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(exam_id, problem_id) DO UPDATE SET mode=excluded.mode, code=excluded.code, "
+                "passed=excluded.passed, total=excluded.total, pass_rate=excluded.pass_rate, updated_at=excluded.updated_at",
+                (exam_id, problem_id, mode, code, passed, total, pass_rate, now_iso()),
+            )
+
+    def exam_answers(self, exam_id: int) -> list[sqlite3.Row]:
+        with self.conn() as c:
+            return c.execute("SELECT * FROM exam_answers WHERE exam_id=? ORDER BY problem_id", (exam_id,)).fetchall()
+
+    def exam_answer_draft(self, exam_id: int, problem_id: int, code: str) -> None:
+        """只存草稿代码，不覆盖已有的判题结果。"""
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO exam_answers(exam_id, problem_id, mode, code, updated_at) VALUES (?, ?, 'core', ?, ?) "
+                "ON CONFLICT(exam_id, problem_id) DO UPDATE SET code=excluded.code, updated_at=excluded.updated_at",
+                (exam_id, problem_id, code, now_iso()),
+            )
+
+    def exam_answer_code(self, exam_id: int, problem_id: int) -> str:
+        with self.conn() as c:
+            row = c.execute(
+                "SELECT code FROM exam_answers WHERE exam_id=? AND problem_id=?", (exam_id, problem_id)
+            ).fetchone()
+        return row["code"] if row else ""
+
+    def exam_finish(self, exam_id: int, score: float, passed: int, total: int,
+                    elapsed_sec: int, late: int, status: str = "finished") -> None:
+        with self.conn() as c:
+            c.execute(
+                "UPDATE exams SET status=?, score=?, passed=?, total=?, elapsed_sec=?, late=? WHERE id=?",
+                (status, score, passed, total, elapsed_sec, late, exam_id),
+            )
+
+    def exam_history(self, limit: int = 20) -> list[sqlite3.Row]:
+        with self.conn() as c:
+            return c.execute(
+                "SELECT * FROM exams WHERE status != 'running' ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+    def exam_recent_problem_ids(self, n: int) -> set[int]:
+        with self.conn() as c:
+            rows = c.execute(
+                "SELECT problem_ids FROM exams ORDER BY id DESC LIMIT ?", (n,)
+            ).fetchall()
+        out: set[int] = set()
+        for row in rows:
+            try:
+                out.update(json.loads(row["problem_ids"] or "[]"))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def pool_progress_get(self, problem_id: int) -> sqlite3.Row | None:
+        with self.conn() as c:
+            return c.execute("SELECT * FROM pool_progress WHERE problem_id=?", (problem_id,)).fetchone()
+
+    def pool_progress_upsert(self, problem_id: int, pass_rate: float) -> None:
+        with self.conn() as c:
+            c.execute(
+                "INSERT INTO pool_progress(problem_id, status, best_rate, attempts, updated_at) "
+                "VALUES (?, 'done', ?, 1, ?) "
+                "ON CONFLICT(problem_id) DO UPDATE SET "
+                "best_rate=MAX(best_rate, excluded.best_rate), attempts=attempts+1, updated_at=excluded.updated_at",
+                (problem_id, pass_rate, now_iso()),
+            )
 
     def last_session_for_item(self, item_id: int) -> sqlite3.Row | None:
         with self.conn() as c:

@@ -5,6 +5,7 @@ import ast
 import html
 import json
 import logging
+import random
 import re
 import socket
 import threading
@@ -13,7 +14,7 @@ from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import dashboard, judge, materials, motivation, notify, official, planner
+from . import dashboard, judge, materials, motivation, notify, official, planner, problem_source
 from .bank import BANK
 from .config import ROOT, load_config, save_config
 from .store import COMPLETE, RESULT_LABEL, Store
@@ -416,7 +417,9 @@ class App:
             ast.parse(code)
         except SyntaxError as exc:
             raise ValueError(f"语法错误：第 {exc.lineno or '?'} 行 {exc.msg}") from exc
-        cases = official.official_cases(problem)
+        # 池题没有 BANK 参考解，禁用 oracle（否则 KeyError）；主题库题照常补全（DESIGN_v3 §2.3）。
+        allow_oracle = problem["id"] in BANK
+        cases = official.official_cases(problem, allow_oracle=allow_oracle)
         return judge.run_cases(problem, mode, code, "<detached>", cases)
 
     def reset_code(self, payload: dict) -> dict:
@@ -514,6 +517,140 @@ class App:
 
     def week(self) -> dict:
         return {"days": self.store.activity_by_day()}
+
+    # ---- 模拟考试（P3） ----
+    def _exam_running(self, exam_id) -> dict:
+        exam = self.store.exam_get(int(exam_id))
+        if not exam:
+            raise ValueError("考试不存在")
+        if exam["status"] != "running":
+            raise ValueError("考试已结束")
+        return exam
+
+    def _exam_statement(self, problem: dict) -> str:
+        io = problem["io"]
+        lines = [
+            f"# {problem['id']}. {problem['title']}", "",
+            f"{problem.get('difficulty', '')} · 精选题库", "",
+            "## 题意", "", problem.get("description") or "题面见力扣原题链接。", "",
+            "## 约束", "",
+        ]
+        lines += [f"- {c}" for c in (problem.get("constraints") or ["见力扣原题链接。"])]
+        lines += ["", "## 输入格式", ""] + [f"- {d}" for d in io["input_doc"]]
+        for i, s in enumerate((io.get("samples") or [])[:2], 1):
+            lines += ["", f"## 样例输入 {i}", "", materials.code_fence(s["input"])]
+        return markdown_to_html("\n".join(lines))
+
+    def exam_start(self, payload: dict) -> dict:
+        medium = min(3, max(1, int(payload.get("medium", 2))))
+        hard = min(2, max(0, int(payload.get("hard", 1))))
+        minutes = min(120, max(30, int(payload.get("minutes", 60))))
+        pool = [p for p in problem_source.pool().all() if p.get("id")]
+        recent = self.store.exam_recent_problem_ids(10)
+        pool = [p for p in pool if p["id"] not in recent]
+        mediums = [p for p in pool if p.get("difficulty") == "中等"]
+        hards = [p for p in pool if p.get("difficulty") == "困难"]
+        random.shuffle(mediums)
+        random.shuffle(hards)
+        chosen = mediums[:medium] + hards[:hard]
+        if len(chosen) < medium + hard:
+            rest = [p for p in pool if p not in chosen]
+            random.shuffle(rest)
+            chosen += rest[: (medium + hard) - len(chosen)]
+        if not chosen:
+            raise ValueError("精选题库为空，请先运行 tools/build_exam_pool.py 建池")
+        deadline = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        exam_id = self.store.exam_create(payload.get("source", "pool"), minutes, deadline, [p["id"] for p in chosen])
+        problems = [{
+            "id": p["id"], "title": p["title"], "difficulty": p.get("difficulty", ""),
+            "statement_html": self._exam_statement(p),
+            "input_preview": [s["input"] for s in (p["io"].get("samples") or [])[:2]],
+        } for p in chosen]
+        return {"exam_id": exam_id, "deadline": deadline, "minutes": minutes, "problems": problems}
+
+    def exam_run(self, payload: dict) -> dict:
+        exam = self._exam_running(payload.get("exam_id"))
+        pid = int(payload.get("problem_id"))
+        code = payload.get("code")
+        if not isinstance(code, str):
+            raise ValueError("代码必须是字符串")
+        problem = problem_source.find_problem(pid)
+        if not problem:
+            raise ValueError("找不到题目")
+        result = self.run_detached(problem, "core", code)
+        m = result["metrics"]
+        self.store.exam_answer_upsert(exam["id"], pid, "core", code, m["passed"], m["total"], m["pass_rate"])
+        failed = [r["index"] for r in result["results"] if r["status"] != "pass"]
+        return {"problem_id": pid, "passed": m["passed"], "total": m["total"],
+                "pass_rate": m["pass_rate"], "failed_indexes": failed}
+
+    def exam_save(self, payload: dict) -> dict:
+        exam = self._exam_running(payload.get("exam_id"))
+        pid = int(payload.get("problem_id"))
+        code = payload.get("code") or ""
+        self.store.exam_answer_draft(exam["id"], pid, code)
+        return {"ok": True}
+
+    def exam_submit(self, payload: dict) -> dict:
+        exam = self._exam_running(payload.get("exam_id"))
+        problem_ids = json.loads(exam["problem_ids"])
+        answers = {int(a.get("problem_id")): (a.get("code") or "") for a in (payload.get("answers") or [])}
+        total = passed = 0
+        per = []
+        for pid in problem_ids:
+            problem = problem_source.find_problem(pid)
+            if not problem:
+                continue
+            code = answers.get(pid) or self.store.exam_answer_code(exam["id"], pid)
+            result = self.run_detached(problem, "core", code)
+            m = result["metrics"]
+            total += m["total"]
+            passed += m["passed"]
+            per.append({"problem_id": pid, "passed": m["passed"], "total": m["total"], "pass_rate": m["pass_rate"]})
+            self.store.exam_answer_upsert(exam["id"], pid, "core", code, m["passed"], m["total"], m["pass_rate"])
+            self.store.pool_progress_upsert(pid, m["pass_rate"])
+        score = round(100.0 * passed / total, 1) if total else 0.0
+        deadline = datetime.fromisoformat(exam["deadline"])
+        late = 1 if datetime.now() > deadline + timedelta(seconds=30) else 0
+        created = datetime.fromisoformat(exam["created_at"])
+        elapsed = int((datetime.now() - created).total_seconds())
+        self.store.exam_finish(exam["id"], score, passed, total, elapsed, late)
+        xp = motivation.award(self.store, "exam_pass", exam["id"]) if score >= 60 else {"xp_gained": 0, "new_badges": []}
+        return {"exam_id": exam["id"], "score": score, "passed": passed, "total": total,
+                "late": late, "problems": per, **xp}
+
+    def exam_abandon(self, payload: dict) -> dict:
+        exam = self._exam_running(payload.get("exam_id"))
+        self.store.exam_finish(exam["id"], None, None, None, None, 0, status="abandoned")
+        return {"exam_id": exam["id"], "status": "abandoned"}
+
+    def exam_report(self, exam_id: int) -> dict:
+        exam = self.store.exam_get(int(exam_id))
+        if not exam or exam["status"] != "finished":
+            raise ValueError("考试不存在或尚未提交")
+        answers = self.store.exam_answers(int(exam_id))
+        problem_ids = json.loads(exam["problem_ids"])
+        per = []
+        for pid in problem_ids:
+            problem = problem_source.find_problem(pid)
+            row = next((a for a in answers if a["problem_id"] == pid), None)
+            per.append({
+                "problem_id": pid,
+                "title": problem["title"] if problem else f"题目 {pid}",
+                "difficulty": problem.get("difficulty", "") if problem else "",
+                "passed": row["passed"] if row else None,
+                "total": row["total"] if row else None,
+                "pass_rate": row["pass_rate"] if row else None,
+                "code": row["code"] if row else "",
+            })
+        return {
+            "exam_id": exam["id"], "created_at": exam["created_at"], "deadline": exam["deadline"],
+            "score": exam["score"], "passed": exam["passed"], "total": exam["total"],
+            "elapsed_sec": exam["elapsed_sec"], "late": exam["late"], "problems": per,
+        }
+
+    def exam_history(self) -> dict:
+        return {"exams": [dict(r) for r in self.store.exam_history()]}
 
 
 def _validate_config(cfg: dict) -> None:
@@ -691,6 +828,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, **self.app.topics(tag)})
             elif path == "/api/week":
                 self._json({"ok": True, **self.app.week()})
+            elif path == "/api/exam/history":
+                self._json({"ok": True, **self.app.exam_history()})
+            elif path == "/api/exam":
+                eid = int((parse_qs(parsed.query).get("id") or ["0"])[0])
+                self._json({"ok": True, **self.app.exam_report(eid)})
             elif path == "/api/statement":
                 query = parse_qs(parsed.query)
                 pid = int((query.get("id") or ["0"])[0])
@@ -736,6 +878,14 @@ class Handler(BaseHTTPRequestHandler):
                     data = self.app.run(payload)
                 self._json({"ok": True, **data})
                 return
+            if path in ("/api/exam/run", "/api/exam/submit"):
+                # 考试判题同样不占用全局锁。
+                if path == "/api/exam/run":
+                    data = self.app.exam_run(payload)
+                else:
+                    data = self.app.exam_submit(payload)
+                self._json({"ok": True, **data})
+                return
             with self.app.lock:
                 if path == "/api/start":
                     data = self.app.start(payload)
@@ -755,6 +905,12 @@ class Handler(BaseHTTPRequestHandler):
                     data = self.app.replan(payload)
                 elif path == "/api/plan/add":
                     data = self.app.plan_add(payload)
+                elif path == "/api/exam/start":
+                    data = self.app.exam_start(payload)
+                elif path == "/api/exam/save":
+                    data = self.app.exam_save(payload)
+                elif path == "/api/exam/abandon":
+                    data = self.app.exam_abandon(payload)
                 else:
                     self._error("未知路径", 404)
                     return

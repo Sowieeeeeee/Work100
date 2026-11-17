@@ -205,6 +205,16 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
 .tprob .mini{background:#16233a;border:1px solid var(--line);color:#c9d8ec;border-radius:6px;padding:3px 8px;font-size:11px}
 .tprob .mini:hover{border-color:#33506f}
 .tprob.done .tt{color:var(--dim);text-decoration:line-through}
+.examconfig{padding:4vh 16px;flex:1;overflow:auto}
+.exambody{flex:1;display:grid;grid-template-columns:1.1fr 1fr;gap:14px;padding:14px 16px;min-height:0}
+.examleft{display:flex;flex-direction:column;min-height:0;gap:10px}
+.examtabbar{display:flex;gap:6px;flex-wrap:wrap}
+.examtab{border:1px solid var(--line);background:#0c1626;color:var(--muted);border-radius:8px;padding:6px 12px;font-size:12px}
+.examtab.on{border-color:rgba(45,212,191,.5);color:#99f6e4;background:rgba(45,212,191,.08)}
+.examstmt{flex:1;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.examright{display:flex;flex-direction:column;min-height:0;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.examactions{display:flex;gap:10px;align-items:center;padding:9px 13px;border-top:1px solid var(--line)}
+@media (max-width:920px){.exambody{grid-template-columns:1fr;overflow:auto}.examstmt{max-height:40vh}}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(10px);
   background:#13223a;border:1px solid #2b4668;color:#e6f0ff;padding:10px 16px;border-radius:10px;
   font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:99;max-width:80vw}
@@ -357,7 +367,7 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
   <div class="tabs" id="navTabs">
     <button class="tab on" data-view="practice">练习计划</button>
     <button class="tab" data-view="topic">专题练习</button>
-    <button class="tab" data-view="exam" data-locked="1">模拟考试</button>
+    <button class="tab" data-view="exam">模拟考试</button>
     <button class="tab" data-view="interview" data-locked="1">手撕面试</button>
     <button class="tab" data-view="report" data-locked="1">复盘报告</button>
   </div>
@@ -479,6 +489,49 @@ footer{margin-top:22px;color:#4f637e;font-size:11px;line-height:1.8;text-align:c
     </div>
   </div>
 </div>
+
+<div class="ws hidden" id="examShell">
+  <div class="wshead">
+    <div class="wsleft">
+      <button class="wsclose" id="examBack">←</button>
+      <div class="wstitle"><b>模拟考试</b><span class="pill info">精选池</span></div>
+    </div>
+    <div class="wsright">
+      <span class="chip" id="examClock">--:--</span>
+      <button class="btn primary" id="examSubmit">交卷</button>
+    </div>
+  </div>
+  <div class="examconfig" id="examConfig">
+    <div class="panel pad" style="max-width:520px;margin:6vh auto">
+      <div class="sect-head"><h2>配置本场考试</h2></div>
+      <div class="grid2">
+        <div class="field"><label>中等题</label><input type="number" id="examMedium" min="1" max="3" value="2"></div>
+        <div class="field"><label>困难题</label><input type="number" id="examHard" min="0" max="2" value="1"></div>
+      </div>
+      <div class="field"><label>时长（分钟）</label><input type="number" id="examMinutes" min="30" max="120" value="60"></div>
+      <div class="tip">考试只展示输入样例，不下发期望输出；运行只告诉你「过/没过与第几个用例」，不落盘、不影响练习数据。</div>
+      <div class="mfoot"><button class="btn primary" id="examStartBtn">开始考试</button></div>
+    </div>
+  </div>
+  <div class="exambody hidden" id="examBody">
+    <div class="examleft">
+      <div class="examtabbar" id="examTabs"></div>
+      <div class="examstmt" id="examStmt"></div>
+    </div>
+    <div class="examright">
+      <div class="edtop"><span id="examTitle">--</span><span>核心代码模式</span></div>
+      <div class="edwrap" style="flex:1;min-height:0">
+        <textarea class="editor" id="examArea" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"
+          style="height:100%;min-height:240px"></textarea>
+      </div>
+      <div class="examactions">
+        <button class="btn" id="examRun">运行</button>
+        <span class="codestate" id="examRes">未运行</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -597,6 +650,7 @@ let activeView = "practice", topicTag = "group", topicData = null;
 function switchView(view){
   const btn = document.querySelector('#navTabs [data-view="' + view + '"]');
   if(btn && btn.dataset.locked){ toast("该功能将在后续阶段开放"); return; }
+  if(view === "exam"){ openExam(); return; }
   activeView = view;
   document.querySelectorAll("#navTabs .tab").forEach(t => t.classList.toggle("on", t.dataset.view === view));
   $("#viewPractice").classList.toggle("hidden", view !== "practice");
@@ -653,6 +707,100 @@ function openTopicPractice(pid){
   const p = (topicData.topics || []).flatMap(t => t.problems).find(x => x.id === pid);
   if(!p){ toast("找不到题目"); return; }
   openWorkspace({problem_id: p.id, title: p.title, difficulty: p.difficulty, free: true});
+}
+
+/* ---------------- 模拟考试（P3） ---------------- */
+const exam = {id:null, problems:[], cur:0, deadline:null, timer:null, codes:{}, running:false};
+function openExam(){
+  $("#examShell").classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  $("#examConfig").classList.remove("hidden");
+  $("#examBody").classList.add("hidden");
+}
+function closeExam(){
+  clearInterval(exam.timer);
+  $("#examShell").classList.add("hidden");
+  document.body.style.overflow = "";
+}
+$("#examBack").addEventListener("click", () => { if(confirm("退出考试？未提交的作答会丢失。")) closeExam(); });
+$("#examStartBtn").addEventListener("click", startExam);
+async function startExam(){
+  try{
+    const d = await api("/api/exam/start", {
+      medium:Number($("#examMedium").value), hard:Number($("#examHard").value), minutes:Number($("#examMinutes").value)
+    });
+    exam.id = d.exam_id; exam.problems = d.problems; exam.cur = 0;
+    exam.deadline = new Date(d.deadline.replace(" ","T")); exam.codes = {};
+    $("#examConfig").classList.add("hidden");
+    $("#examBody").classList.remove("hidden");
+    selectExamProblem(0);
+    exam.timer = setInterval(tickExam, 1000);
+    tickExam();
+  }catch(e){ toast(e.message); }
+}
+function renderExamTabs(){
+  $("#examTabs").innerHTML = exam.problems.map((p,i) =>
+    '<button class="examtab' + (i===exam.cur?' on':'') + '" data-i="'+i+'">#'+p.id+' · '+esc(p.difficulty)+'</button>').join("");
+  $("#examTabs").querySelectorAll(".examtab").forEach(t =>
+    t.addEventListener("click", () => { saveExamDraft(); selectExamProblem(Number(t.dataset.i)); }));
+}
+function selectExamProblem(i){
+  exam.cur = i;
+  const p = exam.problems[i];
+  $("#examTitle").textContent = "#" + p.id + " " + p.title;
+  let html = '<div class="md">' + p.statement_html + '</div>';
+  if(p.input_preview && p.input_preview.length){
+    html += '<div class="caseintro">输入样例预览（不含输出）：' +
+      p.input_preview.map(x => '<pre>' + esc(x) + '</pre>').join("") + '</div>';
+  }
+  $("#examStmt").innerHTML = html;
+  $("#examArea").value = exam.codes[p.id] || "";
+  $("#examRes").textContent = "未运行";
+  renderExamTabs();
+}
+async function saveExamDraft(){
+  const p = exam.problems[exam.cur];
+  if(!p) return;
+  exam.codes[p.id] = $("#examArea").value;
+  try{ await api("/api/exam/save", {exam_id:exam.id, problem_id:p.id, code:exam.codes[p.id]}); }catch(e){}
+}
+$("#examArea").addEventListener("input", () => {
+  const p = exam.problems[exam.cur]; if(p) exam.codes[p.id] = $("#examArea").value;
+});
+$("#examRun").addEventListener("click", async () => {
+  const p = exam.problems[exam.cur];
+  if(!p || exam.running) return;
+  exam.running = true;
+  $("#examRes").textContent = "判题中…";
+  try{
+    const d = await api("/api/exam/run", {exam_id:exam.id, problem_id:p.id, code:$("#examArea").value});
+    $("#examRes").textContent = "通过 " + d.passed + "/" + d.total + " · 通过率 " + d.pass_rate + "%" +
+      (d.failed_indexes && d.failed_indexes.length ? " · 失败用例 " + d.failed_indexes.join(",") : "");
+  }catch(e){ $("#examRes").textContent = "错误：" + e.message; }
+  finally{ exam.running = false; }
+});
+$("#examSubmit").addEventListener("click", async () => {
+  if(!exam.id) return;
+  if(!confirm("确定交卷？交卷后不能再修改。")) return;
+  await saveExamDraft();
+  try{
+    const answers = exam.problems.map(p => ({problem_id:p.id, code: exam.codes[p.id] || ""}));
+    const d = await api("/api/exam/submit", {exam_id:exam.id, answers});
+    clearInterval(exam.timer);
+    let html = '<div class="donebox"><b>得分 ' + d.score + '</b> · ' + d.passed + '/' + d.total + ' 通过' +
+      (d.late ? ' · 超时提交' : '') + '</div>';
+    if(d.xp_gained) html += '<div class="donebox">+' + d.xp_gained + ' XP</div>';
+    (d.new_badges || []).forEach(b => { html += '<div class="donebox">解锁徽章：' + esc(b.name) + '</div>'; });
+    html += '<div class="mfoot"><button class="btn primary" id="examClose">关闭</button></div>';
+    openModal("考试结果", html);
+    $("#examClose").onclick = () => { closeModal(); closeExam(); refresh(true); };
+  }catch(e){ toast(e.message); }
+});
+function tickExam(){
+  if(!exam.deadline) return;
+  const left = Math.max(0, Math.floor((exam.deadline.getTime() - Date.now())/1000));
+  $("#examClock").textContent = fmtClock(left);
+  if(left <= 0) $("#examClock").textContent = "超时，请交卷";
 }
 
 function renderItems(){
