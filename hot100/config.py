@@ -15,7 +15,7 @@ LOGS = ROOT / "logs"
 
 DEFAULT_CONFIG = {
     "dataset": "hot100",
-    "deadline": "2026-11-10",
+    "deadline": "2026-12-07",
     "session_start": "19:30",
     "session_end": "23:00",
     "new_slot_minutes": 25,
